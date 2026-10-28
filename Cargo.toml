@@ -1,6 +1,6 @@
 [package]
 name = "world-clock-widget"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2021"
 description = "A tiny always-on desktop widget for Windows that shows up to five analog world clocks"
 license = "MIT"
@@ -44,3 +44,6 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+[build-dependencies]
+embed-resource = "3"

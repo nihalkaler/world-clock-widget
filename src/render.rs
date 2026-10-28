@@ -973,6 +973,22 @@ mod tests {
     }
 
     #[test]
+    fn smallest_and_largest_sizes_render() {
+        use crate::config::Size;
+        let fonts = Fonts::load_system().expect("a font for tests");
+        let now: jiff::Timestamp = "2026-10-28T01:47:30Z".parse().unwrap();
+        for theme in Theme::ALL {
+            let cfg = Config { theme, dial: DialStyle::Stopwatch, ..Config::default() };
+            let clocks = crate::resolve_clocks(&cfg);
+            let tiny = crate::render_now(now, &cfg, &clocks, Size::new(1).factor(), &fonts);
+            let huge = crate::render_now(now, &cfg, &clocks, Size::new(100).factor(), &fonts);
+            assert_eq!(panel_size(4, 0.25), (tiny.width(), tiny.height()));
+            assert_eq!(huge.width(), panel_size(4, 2.0).0);
+            assert!(huge.width() > tiny.width() * 7);
+        }
+    }
+
+    #[test]
     fn a_per_clock_dial_changes_only_that_clock() {
         let base = Config { clocks: vec![ClockConfig::new("UTC", "UTC"), ClockConfig::new("UTC", "UTC")], ..Config::default() };
         let mut mixed = base.clone();

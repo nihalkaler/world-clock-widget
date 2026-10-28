@@ -9,21 +9,71 @@ pub const MAX_CLOCKS: usize = 5;
 /// The special zone name meaning "whatever time zone this PC is set to".
 pub const LOCAL_ZONE: &str = "local";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum Size {
-    Small,
-    #[default]
-    Medium,
-    Large,
-}
+/// Widget size from 1 to 100. 50 is the normal size, 100 is twice as big
+/// and 1 is a quarter of normal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Size(u8);
 
 impl Size {
+    pub const MIN: u8 = 1;
+    pub const MAX: u8 = 100;
+    pub const NORMAL: Size = Size(50);
+    /// The ready-made sizes in the menu.
+    pub const PRESETS: [u8; 4] = [25, 50, 75, 100];
+
+    /// Any number is accepted and kept within 1 to 100.
+    pub fn new(value: i64) -> Size {
+        Size(value.clamp(Self::MIN as i64, Self::MAX as i64) as u8)
+    }
+
+    pub fn value(self) -> u8 {
+        self.0
+    }
+
+    /// How much to scale the widget by. 1-50 runs from a quarter of normal
+    /// up to normal; 50-100 runs from normal up to double.
     pub fn factor(self) -> f32 {
-        match self {
-            Size::Small => 0.8,
-            Size::Medium => 1.0,
-            Size::Large => 1.25,
+        let n = self.0 as f32;
+        if n <= 50.0 {
+            0.25 + (n - 1.0) * 0.75 / 49.0
+        } else {
+            n / 50.0
+        }
+    }
+}
+
+impl Default for Size {
+    fn default() -> Self {
+        Size::NORMAL
+    }
+}
+
+impl Serialize for Size {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_u8(self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for Size {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Number(f64),
+            Name(String),
+        }
+        match Raw::deserialize(d)? {
+            Raw::Number(n) if n.is_finite() => Ok(Size::new(n.round() as i64)),
+            Raw::Number(_) => Err(serde::de::Error::custom("size must be a number from 1 to 100")),
+            // Names used by version 1.x settings files.
+            Raw::Name(name) => match name.trim().to_ascii_lowercase().as_str() {
+                "small" => Ok(Size(37)),
+                "medium" => Ok(Size::NORMAL),
+                "large" => Ok(Size(63)),
+                _ => Err(serde::de::Error::custom(format!(
+                    "size \"{name}\" isn't recognised; use a number from 1 to 100 (50 is normal)"
+                ))),
+            },
         }
     }
 }
@@ -299,7 +349,7 @@ impl Default for Config {
             master: 1,
             use_24_hour: false,
             second_hand: true,
-            size: Size::Medium,
+            size: Size::NORMAL,
             theme: Theme::Dark,
             dial: DialStyle::Classic,
             layer: Layer::Desktop,
@@ -325,7 +375,7 @@ const HEADER: &str = "\
 #   master       which clock (1 = leftmost) time differences are measured from
 #   use_24_hour  true for 14:30, false for 2:30 PM
 #   second_hand  show the second hand
-#   size         \"small\", \"medium\" or \"large\"
+#   size         1 to 100: 50 is normal, 100 is twice as big, 1 is a quarter
 #   theme        \"dark\", \"light\" or \"cyberpunk\"
 #   dial         clock face design: \"classic\", \"numbers\", \"roman\", \"minimal\",
 #                \"stopwatch\" or \"neon\"
@@ -521,6 +571,41 @@ mod tests {
         assert_eq!(cfg.dial, DialStyle::default());
         assert!(cfg.colors.is_empty());
         assert_eq!(cfg.master, 2);
+    }
+
+    #[test]
+    fn size_runs_from_a_quarter_to_double() {
+        let f = |n| Size::new(n).factor();
+        assert!((f(1) - 0.25).abs() < 1e-6);
+        assert!((f(50) - 1.0).abs() < 1e-6);
+        assert!((f(75) - 1.5).abs() < 1e-6);
+        assert!((f(100) - 2.0).abs() < 1e-6);
+        // Bigger numbers always mean a bigger widget.
+        for n in 1..100 {
+            assert!(f(n + 1) > f(n), "{n}");
+        }
+        assert_eq!(Size::new(0).value(), 1);
+        assert_eq!(Size::new(250).value(), 100);
+        assert_eq!(Config::default().size, Size::NORMAL);
+    }
+
+    #[test]
+    fn size_is_saved_as_a_number_and_read_from_numbers_or_old_names() {
+        let cfg = Config { size: Size::new(63), ..Config::default() };
+        assert!(cfg.to_toml().contains("\nsize = 63\n"));
+        let read = |text: &str| Config::from_toml(text).map(|c| c.size.value());
+        assert_eq!(read("size = 75"), Ok(75));
+        assert_eq!(read("size = 62.6"), Ok(63));
+        assert_eq!(read("size = 0"), Ok(1));
+        assert_eq!(read("size = 999"), Ok(100));
+        // Version 1.x names keep roughly the same size.
+        assert_eq!(read("size = \"small\""), Ok(37));
+        assert_eq!(read("size = \"medium\""), Ok(50));
+        assert_eq!(read("size = \"large\""), Ok(63));
+        assert!((Size::new(37).factor() - 0.8).abs() < 0.01);
+        assert!((Size::new(63).factor() - 1.25).abs() < 0.02);
+        let err = Config::from_toml("size = \"huge\"").unwrap_err();
+        assert!(err.contains("1 to 100"), "{err}");
     }
 
     #[test]
