@@ -4,6 +4,7 @@
 pub mod cities;
 pub mod clock;
 pub mod config;
+pub mod digital;
 pub mod render;
 pub mod text;
 

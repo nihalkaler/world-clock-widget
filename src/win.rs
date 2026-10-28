@@ -9,7 +9,7 @@ use std::ffi::c_void;
 use std::path::PathBuf;
 use std::ptr::{null, null_mut};
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU8, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use windows_sys::Win32::Foundation::*;
 use windows_sys::Win32::Graphics::Gdi::*;
@@ -29,8 +29,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use world_clock_widget::cities::{self, CITIES, REGIONS};
 use world_clock_widget::clock::{self, ResolvedClock};
 use world_clock_widget::config::{
+    DigitalStyle, Display,
     self, ClockConfig, ColorField, Config, DialStyle, Layer, Size, Theme, LOCAL_ZONE, MAX_CLOCKS,
 };
+use world_clock_widget::digital::{self, Flip};
 use world_clock_widget::render::{self, Palette};
 use world_clock_widget::text::Fonts;
 
@@ -41,6 +43,8 @@ const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const RUN_VALUE: &str = "WorldClockWidget";
 
 const TIMER_TICK: usize = 1;
+/// Runs at about 60 frames a second, only while a flip card is turning.
+const TIMER_ANIM: usize = 2;
 const WM_APP_TRAY: u32 = WM_APP + 1;
 const WM_APP_FOREGROUND: u32 = WM_APP + 2;
 const WM_APP_ERROR: u32 = WM_APP + 3;
@@ -64,6 +68,9 @@ const ID_DIAL_BASE: u32 = 80; // + 0..6, every clock
 const ID_EXIT: u32 = 99;
 const ID_CLOCK_DIAL_SAME: u32 = 110; // the clicked clock follows the others
 const ID_CLOCK_DIAL_BASE: u32 = 111; // + 0..6, the clicked clock only
+const ID_DISPLAY_ANALOG: u32 = 120;
+const ID_DISPLAY_DIGITAL: u32 = 121;
+const ID_DIGITAL_BASE: u32 = 130; // + digital layout index
 const ID_SET_ZONE: u32 = 1000; // + city index
 const ID_SET_LOCAL: u32 = 1900;
 const ID_SET_UTC: u32 = 1901;
@@ -174,6 +181,9 @@ struct App {
     last_frame: String,
     base: Option<(String, tiny_skia::Pixmap)>,
     position_dirty: bool,
+    /// What each flip clock's cards show, and any flip in progress.
+    flip_tracks: Vec<FlipTrack>,
+    animating: bool,
     icon: HICON,
     tray_added: bool,
     hook: HWINEVENTHOOK,
@@ -192,6 +202,49 @@ impl App {
         self.clocks = world_clock_widget::resolve_clocks(&self.cfg);
     }
 
+    /// Notices when a flip clock's hours or minutes change and starts that
+    /// card flipping. Returns where each clock's cards are in their flip.
+    #[allow(clippy::needless_range_loop)] // walks four parallel two-card arrays
+    fn update_flips(&mut self, readings: &[clock::Reading]) -> Vec<Flip> {
+        let flip_mode = self.cfg.display == Display::Digital && self.cfg.digital == DigitalStyle::Flip;
+        if !flip_mode {
+            self.flip_tracks.clear();
+            return Vec::new();
+        }
+        let use_24_hour = self.cfg.use_24_hour;
+        if self.flip_tracks.len() != readings.len() {
+            // New or different clocks: show them as they are, without flipping.
+            self.flip_tracks = readings
+                .iter()
+                .map(|r| FlipTrack { shown: digital::card_texts(r, use_24_hour), ..FlipTrack::default() })
+                .collect();
+        }
+        let now = Instant::now();
+        readings
+            .iter()
+            .zip(&mut self.flip_tracks)
+            .map(|(reading, track)| {
+                let texts = digital::card_texts(reading, use_24_hour);
+                let mut flip = Flip::default();
+                for i in 0..2 {
+                    if texts[i] != track.shown[i] {
+                        track.from[i] = Some(std::mem::replace(&mut track.shown[i], texts[i].clone()));
+                        track.started[i] = Some(now);
+                    }
+                    let t = track.started[i]
+                        .map_or(1.0, |start| now.duration_since(start).as_secs_f32() / digital::FLIP_SECONDS);
+                    if t >= 1.0 {
+                        track.from[i] = None;
+                        track.started[i] = None;
+                    }
+                    flip.from[i] = track.from[i].clone();
+                    flip.progress[i] = t.min(1.0);
+                }
+                flip
+            })
+            .collect()
+    }
+
     /// Draws the widget if anything visible changed since the last frame.
     fn redraw(&mut self, force: bool) {
         let now = jiff::Timestamp::now();
@@ -202,11 +255,22 @@ impl App {
                 r.second = 0;
             }
         }
+        let flips = self.update_flips(&readings);
+        let animating = flips.iter().any(|f| (0..2).any(|i| f.from[i].is_some() && f.progress[i] < 1.0));
         let key = format!("{readings:?}{:?}{scale}", self.cfg);
-        if !force && key == self.last_frame {
+        if !force && !animating && !self.animating && key == self.last_frame {
             return;
         }
         self.last_frame = key;
+        // Draw smoothly while a card flips, then drop back to once a second.
+        unsafe {
+            if animating && !self.animating {
+                SetTimer(self.hwnd, TIMER_ANIM, 15, None);
+            } else if !animating && self.animating {
+                KillTimer(self.hwnd, TIMER_ANIM);
+            }
+        }
+        self.animating = animating;
 
         // The face, text and panel only change once a minute: keep them and
         // draw just the hands on top each second.
@@ -221,7 +285,7 @@ impl App {
         }
         let Some((_, base)) = &self.base else { return };
         let mut pixmap = base.clone();
-        render::draw_hands(&mut pixmap, &readings, &self.cfg, scale);
+        render::draw_hands(&mut pixmap, &readings, &self.cfg, scale, &self.fonts, &flips);
         unsafe { self.present(&pixmap) };
         if self.position_dirty {
             self.position_dirty = false;
@@ -458,6 +522,11 @@ impl App {
                 return AfterMenu::PickColor(ColorField::ALL[(id - ID_COLOR_BASE) as usize]);
             }
             ID_COLOR_RESET => self.cfg.colors = Default::default(),
+            ID_DISPLAY_ANALOG => self.cfg.display = Display::Analog,
+            ID_DISPLAY_DIGITAL => self.cfg.display = Display::Digital,
+            id if (ID_DIGITAL_BASE..ID_DIGITAL_BASE + DigitalStyle::ALL.len() as u32).contains(&id) => {
+                self.cfg.digital = DigitalStyle::ALL[(id - ID_DIGITAL_BASE) as usize];
+            }
             id if (ID_DIAL_BASE..ID_DIAL_BASE + DialStyle::ALL.len() as u32).contains(&id) => {
                 self.cfg.dial = DialStyle::ALL[(id - ID_DIAL_BASE) as usize];
             }
@@ -519,6 +588,7 @@ impl App {
     fn shutdown(&mut self) {
         unsafe {
             KillTimer(self.hwnd, TIMER_TICK);
+            KillTimer(self.hwnd, TIMER_ANIM);
             if !self.hook.is_null() {
                 UnhookWinEvent(self.hook);
                 self.hook = null_mut();
@@ -527,6 +597,15 @@ impl App {
         self.remove_tray_icon();
         self.remember_position();
     }
+}
+
+/// One flip clock's two cards: what they show now, and what they showed
+/// before a flip that is still under way.
+#[derive(Debug, Clone, Default)]
+struct FlipTrack {
+    shown: [String; 2],
+    from: [Option<String>; 2],
+    started: [Option<Instant>; 2],
 }
 
 struct MenuState {
@@ -709,14 +788,16 @@ unsafe fn build_menu(state: &MenuState) -> HMENU {
             "Change time zone",
             true,
         );
-        let own = CreatePopupMenu();
-        let own_dial = cfg.clocks.get(i).and_then(|c| c.dial);
-        append(own, check(own_dial.is_none()), ID_CLOCK_DIAL_SAME, "Same as the other clocks");
-        separator(own);
-        for (k, style) in DialStyle::ALL.iter().enumerate() {
-            append(own, check(own_dial == Some(*style)), ID_CLOCK_DIAL_BASE + k as u32, style.name());
+        if cfg.display == Display::Analog {
+            let own = CreatePopupMenu();
+            let own_dial = cfg.clocks.get(i).and_then(|c| c.dial);
+            append(own, check(own_dial.is_none()), ID_CLOCK_DIAL_SAME, "Same as the other clocks");
+            separator(own);
+            for (k, style) in DialStyle::ALL.iter().enumerate() {
+                append(own, check(own_dial == Some(*style)), ID_CLOCK_DIAL_BASE + k as u32, style.name());
+            }
+            append_submenu(menu, own, "This clock's face", true);
         }
-        append_submenu(menu, own, "This clock's face", true);
         let master = i == state.master;
         append(
             menu,
@@ -738,7 +819,8 @@ unsafe fn build_menu(state: &MenuState) -> HMENU {
     separator(menu);
 
     append(menu, check(cfg.use_24_hour), ID_24H, "24-hour time");
-    append(menu, check(cfg.second_hand), ID_SECOND_HAND, "Second hand");
+    let digital = cfg.display == Display::Digital;
+    append(menu, check(cfg.second_hand), ID_SECOND_HAND, if digital { "Show seconds" } else { "Second hand" });
 
     let size = CreatePopupMenu();
     let current = cfg.size.value();
@@ -756,11 +838,24 @@ unsafe fn build_menu(state: &MenuState) -> HMENU {
     append(size, check(is_custom), ID_SIZE_CUSTOM, &custom);
     append_submenu(menu, size, &format!("Size ({current})"), true);
 
-    let dial = CreatePopupMenu();
-    for (k, style) in DialStyle::ALL.iter().enumerate() {
-        append(dial, check(cfg.dial == *style), ID_DIAL_BASE + k as u32, style.name());
+    let kind = CreatePopupMenu();
+    append(kind, check(!digital), ID_DISPLAY_ANALOG, "Analog");
+    append(kind, check(digital), ID_DISPLAY_DIGITAL, "Digital");
+    append_submenu(menu, kind, &format!("Clock type ({})", if digital { "digital" } else { "analog" }), true);
+
+    // Face designs for analog clocks, layouts for digital ones.
+    let face = CreatePopupMenu();
+    if digital {
+        for (k, style) in DigitalStyle::ALL.iter().enumerate() {
+            append(face, check(cfg.digital == *style), ID_DIGITAL_BASE + k as u32, style.name());
+        }
+        append_submenu(menu, face, "Digital layout", true);
+    } else {
+        for (k, style) in DialStyle::ALL.iter().enumerate() {
+            append(face, check(cfg.dial == *style), ID_DIAL_BASE + k as u32, style.name());
+        }
+        append_submenu(menu, face, "Clock face", true);
     }
-    append_submenu(menu, dial, "Clock face", true);
 
     let theme = CreatePopupMenu();
     for (k, t) in Theme::ALL.iter().enumerate() {
@@ -1148,6 +1243,10 @@ fn x_from_lparam(lparam: LPARAM) -> i32 {
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
+        WM_TIMER if wparam == TIMER_ANIM => {
+            with_app(|app| app.redraw(false));
+            0
+        }
         WM_TIMER if wparam == TIMER_TICK => {
             if with_app(|app| app.on_tick()).is_none() {
                 schedule_tick(hwnd);
@@ -1378,6 +1477,8 @@ pub fn run() {
             last_frame: String::new(),
             base: None,
             position_dirty: false,
+            flip_tracks: Vec::new(),
+            animating: false,
             icon,
             tray_added: false,
             hook,

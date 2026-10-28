@@ -10,7 +10,8 @@ A small Windows desktop widget that shows up to five analog clocks side by side.
 - **Stays in a fixed spot**: drag it where you want, then lock it. It can sit on the desktop behind your windows, act like a normal window, or stay always on top
 - **Runs all the time**: starts with Windows, sits in the tray, and has no taskbar button
 - **Small**: one exe under 2 MB, no installer and no runtime. It only redraws the clock hands each second; the faces and text are cached and redrawn once a minute
-- **Make it yours**: six clock-face designs, Dark, Light and Cyberpunk themes, and your own colours from the Windows colour picker
+- **Analog or digital**: six analog face designs, or four digital layouts including a flip clock whose cards flip down when the minute changes
+- **Make it yours**: Dark, Light and Cyberpunk themes, and your own colours from the Windows colour picker
 - **Any size from 1 to 100**: presets at 25, 50 (normal), 75 and 100 (twice as big), or a custom size with a live-preview slider
 - 12 or 24-hour time, and sharp on high-DPI screens
 
@@ -33,7 +34,20 @@ On first launch it appears in the top-right corner with your own time zone plus 
 
 ## Make it yours
 
-**Clock faces.** Right-click → **Clock face** changes every clock. Right-click one clock → **This clock's face** gives just that clock its own design.
+**Analog or digital.** Right-click → **Clock type** → **Analog** (the default) or **Digital**. Digital clocks have four layouts under **Digital layout**:
+
+| Layout | Looks like |
+| --- | --- |
+| Flip clock | Split-flap cards for the hours and minutes. When a number changes, the top flap folds down and the new one drops into place. A thin bar under the cards fills up over each minute |
+| LED segments | A seven-segment display like a bedside alarm clock, with small seconds and a blinking colon |
+| Ring | Big digits inside a ring that fills up with the seconds |
+| Binary | Each digit as lit dots in binary (hours, minutes, seconds), with the normal time written underneath |
+
+![The four digital layouts in the Dark and Cyberpunk themes](docs/digital.png)
+
+Digital clocks follow the same themes, colours, 24-hour and **Show seconds** settings as analog ones, and take up a little less height. The flip animation runs at about 60 frames a second only while a card is turning; the rest of the time the widget still redraws just once a second.
+
+**Clock faces.** For analog clocks, right-click → **Clock face** changes every clock. Right-click one clock → **This clock's face** gives just that clock its own design.
 
 ![The six clock faces in the Dark and Cyberpunk themes](docs/faces.png)
 
@@ -63,7 +77,8 @@ On first launch it appears in the top-right corner with your own time zone plus 
 | Keep it behind windows, normal, or on top | Right-click → **Placement** |
 | Stop accidental dragging | Right-click → **Lock position** |
 | Change the size | Right-click → **Size** → 25, 50, 75 or 100, or **Custom** to drag a slider or type any number from 1 to 100. The widget resizes as you drag; **Cancel** puts it back |
-| Change face, theme, colours, 24-hour time, second hand | Right-click → the matching item |
+| Switch between analog and digital | Right-click → **Clock type** |
+| Change face or digital layout, theme, colours, 24-hour time, seconds | Right-click → the matching item |
 | Reach the menu when the widget is covered | Click the clock icon in the system tray |
 
 The **Change time zone** menu has about 100 cities grouped by region, plus "This PC's time zone", which follows your computer's time zone setting (handy when you travel).
@@ -80,7 +95,9 @@ use_24_hour = false
 second_hand = true
 size = 50             # 1 to 100: 50 is normal, 100 is twice as big, 1 is a quarter
 theme = "dark"        # dark | light | cyberpunk
-dial = "classic"      # classic | numbers | roman | minimal | stopwatch | neon
+display = "analog"    # analog | digital
+dial = "classic"      # analog face: classic | numbers | roman | minimal | stopwatch | neon
+digital = "flip"      # digital layout: flip | segment | ring | binary
 layer = "desktop"     # desktop | normal | top
 locked = false
 opacity = 0.85        # background, 0.3 to 1.0
@@ -115,6 +132,7 @@ Written in Rust with no GUI framework:
 | --- | --- |
 | `src/win.rs` | The Win32 side, through `windows-sys`: a per-pixel-alpha layered window, tray icon, menus, the Windows colour picker (`ChooseColor`), the Custom size dialog (built from an in-memory dialog template, with a slider that resizes the widget live), start-with-Windows (registry `Run` key), single-instance guard, per-monitor DPI, and z-order handling for desktop placement |
 | `src/render.rs` | Draws the widget with [`tiny-skia`](https://github.com/RazrFalcon/tiny-skia) into a pixel buffer, which is handed to Windows with `UpdateLayeredWindow`. Themes are palettes, custom colours override them, and each face design draws its own marks and hands (glow is layered translucent strokes) |
+| `src/digital.rs` | The digital layouts. Flip cards are drawn as small images; while one flips, its top half is squashed towards the hinge and then the new bottom half unfolds, each clipped to its half with a mask |
 | `src/text.rs` | Turns glyph outlines into anti-aliased paths with [`ab_glyph`](https://github.com/alexheretic/ab-glyph), with letter spacing and glow, using fonts Windows already has (Segoe UI, Bahnschrift, Georgia) so none are bundled |
 | `src/clock.rs` | Time-zone maths with [`jiff`](https://github.com/BurntSushi/jiff), which bundles the IANA time-zone database on Windows so daylight-saving rules are correct |
 | `src/config.rs` | Settings: TOML load/save, defaults, and keeping values in range |
@@ -127,7 +145,7 @@ Because drawing is platform independent, the widget can also be rendered to a PN
 cargo run --release -- --preview out.png --at 2026-10-28T01:47:30Z --local Pacific/Auckland --scale 1.5 --theme cyberpunk --dial numbers
 ```
 
-Run the tests with `cargo test`. They cover daylight-saving changes, half- and quarter-hour zones (India, Nepal, Chatham Islands), "yesterday/tomorrow" across the date line, settings parsing (including files from older versions), custom colours, that every theme and face design renders, and that every city in the menu is a real time zone.
+Run the tests with `cargo test`. They cover daylight-saving changes, half- and quarter-hour zones (India, Nepal, Chatham Islands), "yesterday/tomorrow" across the date line, settings parsing (including files from older versions), custom colours, the seven-segment table, that every theme, face design and digital layout renders, and that every city in the menu is a real time zone.
 
 ## Licence
 
