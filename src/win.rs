@@ -196,7 +196,7 @@ impl App {
             r.second = 0;
         }
         let base_key = format!("{still:?}{:?}{scale}", self.cfg);
-        if force || self.base.as_ref().map_or(true, |(k, _)| *k != base_key) {
+        if force || self.base.as_ref().is_none_or(|(k, _)| *k != base_key) {
             let base = render::render_base(&readings, &self.cfg, scale, &self.fonts);
             self.base = Some((base_key, base));
         }
@@ -213,7 +213,7 @@ impl App {
     unsafe fn present(&mut self, pixmap: &tiny_skia::Pixmap) {
         let (w, h) = (pixmap.width() as i32, pixmap.height() as i32);
         let first_frame = self.surface.is_none();
-        let resized = self.surface.as_ref().map_or(true, |s| s.width != w || s.height != h);
+        let resized = self.surface.as_ref().is_none_or(|s| s.width != w || s.height != h);
         if resized {
             self.surface = Surface::new(w, h);
         }
@@ -261,7 +261,7 @@ impl App {
     fn on_tick(&mut self) {
         self.ticks = self.ticks.wrapping_add(1);
         // Pick up a changed PC time zone (e.g. after travelling) once a minute.
-        if self.ticks % 60 == 0 && self.cfg.clocks.iter().any(|c| c.zone.eq_ignore_ascii_case(LOCAL_ZONE)) {
+        if self.ticks.is_multiple_of(60) && self.cfg.clocks.iter().any(|c| c.zone.eq_ignore_ascii_case(LOCAL_ZONE)) {
             self.resolve();
         }
         self.check_settings_file();

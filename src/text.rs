@@ -149,7 +149,7 @@ pub fn draw_text(
                 let start = match curve {
                     OutlineCurve::Line(a, _) | OutlineCurve::Quad(a, _, _) | OutlineCurve::Cubic(a, _, _, _) => *a,
                 };
-                if last.map_or(true, |l| (l.x - start.x).abs() > 1e-3 || (l.y - start.y).abs() > 1e-3) {
+                if last.is_none_or(|l| (l.x - start.x).abs() > 1e-3 || (l.y - start.y).abs() > 1e-3) {
                     if last.is_some() {
                         pb.close();
                     }
