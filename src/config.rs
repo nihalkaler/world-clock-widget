@@ -34,6 +34,61 @@ pub enum Theme {
     #[default]
     Dark,
     Light,
+    /// Neon magenta and cyan on near-black, with glow and a HUD-style panel.
+    Cyberpunk,
+}
+
+impl Theme {
+    pub const ALL: [Theme; 3] = [Theme::Dark, Theme::Light, Theme::Cyberpunk];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Theme::Cyberpunk => "Cyberpunk",
+            Theme::Dark => "Dark",
+            Theme::Light => "Light",
+        }
+    }
+}
+
+/// The design of an analog clock face.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum DialStyle {
+    /// Tick marks for every minute and hour.
+    #[default]
+    Classic,
+    /// The hours written as 1 to 12.
+    Numbers,
+    /// The hours as Roman numerals, with a railway-track minute ring.
+    Roman,
+    /// Just dots and slim hands.
+    Minimal,
+    /// An old pocket stopwatch: crown and pushers, a 5-60 scale and a 24-hour sub-dial.
+    Stopwatch,
+    /// Glowing rings with the seconds drawn as an arc around the edge.
+    Neon,
+}
+
+impl DialStyle {
+    pub const ALL: [DialStyle; 6] = [
+        DialStyle::Classic,
+        DialStyle::Numbers,
+        DialStyle::Roman,
+        DialStyle::Minimal,
+        DialStyle::Stopwatch,
+        DialStyle::Neon,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            DialStyle::Classic => "Classic",
+            DialStyle::Numbers => "Numbers",
+            DialStyle::Roman => "Roman numerals",
+            DialStyle::Minimal => "Minimal",
+            DialStyle::Stopwatch => "Old stopwatch",
+            DialStyle::Neon => "Neon",
+        }
+    }
 }
 
 /// Where the widget sits relative to other windows.
@@ -49,6 +104,147 @@ pub enum Layer {
     Top,
 }
 
+/// The colours a person can pick themselves, on top of the theme.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorField {
+    Background,
+    Accent,
+    Text,
+    DayFace,
+    NightFace,
+    DayHands,
+    NightHands,
+}
+
+impl ColorField {
+    pub const ALL: [ColorField; 7] = [
+        ColorField::Background,
+        ColorField::Accent,
+        ColorField::Text,
+        ColorField::DayFace,
+        ColorField::NightFace,
+        ColorField::DayHands,
+        ColorField::NightHands,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            ColorField::Background => "Background",
+            ColorField::Accent => "Accent (second hand, master clock)",
+            ColorField::Text => "Text",
+            ColorField::DayFace => "Clock face by day",
+            ColorField::NightFace => "Clock face at night",
+            ColorField::DayHands => "Hands and marks by day",
+            ColorField::NightHands => "Hands and marks at night",
+        }
+    }
+}
+
+/// Custom colours as "#RRGGBB". Anything left out comes from the theme.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Colors {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub background: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub day_face: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub night_face: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub day_hands: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub night_hands: Option<String>,
+}
+
+impl Colors {
+    pub fn is_empty(&self) -> bool {
+        ColorField::ALL.iter().all(|f| self.get(*f).is_none())
+    }
+
+    fn slot(&mut self, field: ColorField) -> &mut Option<String> {
+        match field {
+            ColorField::Background => &mut self.background,
+            ColorField::Accent => &mut self.accent,
+            ColorField::Text => &mut self.text,
+            ColorField::DayFace => &mut self.day_face,
+            ColorField::NightFace => &mut self.night_face,
+            ColorField::DayHands => &mut self.day_hands,
+            ColorField::NightHands => &mut self.night_hands,
+        }
+    }
+
+    /// The custom colour for `field`, if one is set and readable.
+    pub fn get(&self, field: ColorField) -> Option<(u8, u8, u8)> {
+        let value = match field {
+            ColorField::Background => &self.background,
+            ColorField::Accent => &self.accent,
+            ColorField::Text => &self.text,
+            ColorField::DayFace => &self.day_face,
+            ColorField::NightFace => &self.night_face,
+            ColorField::DayHands => &self.day_hands,
+            ColorField::NightHands => &self.night_hands,
+        };
+        value.as_deref().and_then(parse_hex)
+    }
+
+    pub fn set(&mut self, field: ColorField, rgb: (u8, u8, u8)) {
+        *self.slot(field) = Some(format_hex(rgb));
+    }
+
+    /// Checks every colour, so a typo in the file gets a clear message.
+    fn validate(&self) -> Result<(), String> {
+        let mut copy = self.clone();
+        for field in ColorField::ALL {
+            if let Some(text) = copy.slot(field).as_deref() {
+                if parse_hex(text).is_none() {
+                    return Err(format!(
+                        "[colors] {}: \"{text}\" isn't a colour. Use a hex code like \"#FF2A6D\".",
+                        field_key(field)
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn field_key(field: ColorField) -> &'static str {
+    match field {
+        ColorField::Background => "background",
+        ColorField::Accent => "accent",
+        ColorField::Text => "text",
+        ColorField::DayFace => "day_face",
+        ColorField::NightFace => "night_face",
+        ColorField::DayHands => "day_hands",
+        ColorField::NightHands => "night_hands",
+    }
+}
+
+/// Reads "#RRGGBB", "RRGGBB" or "#RGB".
+pub fn parse_hex(text: &str) -> Option<(u8, u8, u8)> {
+    let hex = text.trim().trim_start_matches('#');
+    if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let byte = |s: &str| u8::from_str_radix(s, 16).ok();
+    match hex.len() {
+        6 => Some((byte(&hex[0..2])?, byte(&hex[2..4])?, byte(&hex[4..6])?)),
+        3 => {
+            let d = |i: usize| byte(&hex[i..i + 1]).map(|v| v * 17);
+            Some((d(0)?, d(1)?, d(2)?))
+        }
+        _ => None,
+    }
+}
+
+pub fn format_hex((r, g, b): (u8, u8, u8)) -> String {
+    format!("#{r:02X}{g:02X}{b:02X}")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClockConfig {
     /// Name shown above the clock. Defaults to the city in the zone name.
@@ -56,11 +252,18 @@ pub struct ClockConfig {
     pub label: Option<String>,
     /// An IANA time zone such as "Europe/London", or "local".
     pub zone: String,
+    /// A face design for just this clock; otherwise the widget-wide one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dial: Option<DialStyle>,
 }
 
 impl ClockConfig {
     pub fn new(label: impl Into<String>, zone: impl Into<String>) -> Self {
-        ClockConfig { label: Some(label.into()), zone: zone.into() }
+        ClockConfig { label: Some(label.into()), zone: zone.into(), dial: None }
+    }
+
+    pub fn local() -> Self {
+        ClockConfig { label: None, zone: LOCAL_ZONE.into(), dial: None }
     }
 }
 
@@ -73,6 +276,8 @@ pub struct Config {
     pub second_hand: bool,
     pub size: Size,
     pub theme: Theme,
+    /// Face design used by every clock that doesn't pick its own.
+    pub dial: DialStyle,
     pub layer: Layer,
     /// When locked, the widget can't be dragged by accident.
     pub locked: bool,
@@ -82,6 +287,8 @@ pub struct Config {
     pub x: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub y: Option<i32>,
+    #[serde(skip_serializing_if = "Colors::is_empty")]
+    pub colors: Colors,
     #[serde(rename = "clock")]
     pub clocks: Vec<ClockConfig>,
 }
@@ -94,13 +301,15 @@ impl Default for Config {
             second_hand: true,
             size: Size::Medium,
             theme: Theme::Dark,
+            dial: DialStyle::Classic,
             layer: Layer::Desktop,
             locked: false,
             opacity: 0.85,
             x: None,
             y: None,
+            colors: Colors::default(),
             clocks: vec![
-                ClockConfig { label: None, zone: LOCAL_ZONE.into() },
+                ClockConfig::local(),
                 ClockConfig::new("London", "Europe/London"),
                 ClockConfig::new("New York", "America/New_York"),
                 ClockConfig::new("Tokyo", "Asia/Tokyo"),
@@ -115,17 +324,24 @@ const HEADER: &str = "\
 #
 #   master       which clock (1 = leftmost) time differences are measured from
 #   use_24_hour  true for 14:30, false for 2:30 PM
-#   second_hand  show the red second hand
+#   second_hand  show the second hand
 #   size         \"small\", \"medium\" or \"large\"
-#   theme        \"dark\" or \"light\"
+#   theme        \"dark\", \"light\" or \"cyberpunk\"
+#   dial         clock face design: \"classic\", \"numbers\", \"roman\", \"minimal\",
+#                \"stopwatch\" or \"neon\"
 #   layer        \"desktop\" (behind other windows), \"normal\" or \"top\" (always on top)
 #   locked       true stops the widget being dragged
 #   opacity      background opacity from 0.3 to 1.0
 #   x, y         screen position of the widget's top-left corner
 #
+# [colors] (optional) overrides the theme with your own hex colours:
+#   background, accent, text, day_face, night_face, day_hands, night_hands
+#   e.g.  accent = \"#FF2A6D\"
+#
 # Up to 5 [[clock]] entries. `zone` is an IANA time zone name
 # (https://en.wikipedia.org/wiki/List_of_tz_database_time_zones) or \"local\"
-# for this PC's own time zone. `label` is optional.
+# for this PC's own time zone. `label` is optional. `dial` (optional) gives
+# one clock its own face design.
 
 ";
 
@@ -133,6 +349,7 @@ impl Config {
     /// Parses settings text, then fixes anything out of range.
     pub fn from_toml(text: &str) -> Result<Config, String> {
         let cfg: Config = toml::from_str(text).map_err(|e| e.to_string())?;
+        cfg.colors.validate()?;
         Ok(cfg.normalized())
     }
 
@@ -146,7 +363,7 @@ impl Config {
         self.clocks.retain(|c| !c.zone.trim().is_empty());
         self.clocks.truncate(MAX_CLOCKS);
         if self.clocks.is_empty() {
-            self.clocks.push(ClockConfig { label: None, zone: LOCAL_ZONE.into() });
+            self.clocks.push(ClockConfig::local());
         }
         self.master = self.master.clamp(1, self.clocks.len());
         self.opacity = if self.opacity.is_finite() { self.opacity.clamp(0.3, 1.0) } else { 0.85 };
@@ -164,6 +381,11 @@ impl Config {
     /// Zero-based index of the master clock.
     pub fn master_index(&self) -> usize {
         self.master.saturating_sub(1).min(self.clocks.len().saturating_sub(1))
+    }
+
+    /// The face design for clock `index`.
+    pub fn dial_for(&self, index: usize) -> DialStyle {
+        self.clocks.get(index).and_then(|c| c.dial).unwrap_or(self.dial)
     }
 
     /// Removes a clock, keeping the master pointing at the same clock where possible.
@@ -231,6 +453,77 @@ mod tests {
     }
 
     #[test]
+    fn defaults_match_version_one() {
+        // Dark theme with classic faces, as before; Cyberpunk is opt-in.
+        for cfg in [Config::default(), Config::from_toml("").unwrap()] {
+            assert_eq!(cfg.theme, Theme::Dark);
+            assert_eq!(cfg.dial, DialStyle::Classic);
+            assert_eq!(cfg.opacity, 0.85);
+        }
+        assert_eq!(Config::from_toml("theme = \"cyberpunk\"").unwrap().theme, Theme::Cyberpunk);
+    }
+
+    #[test]
+    fn colours_and_per_clock_dials_round_trip() {
+        let mut cfg = Config::default();
+        cfg.colors.set(ColorField::Accent, (255, 42, 109));
+        cfg.colors.set(ColorField::NightFace, (1, 2, 3));
+        cfg.clocks[1].dial = Some(DialStyle::Stopwatch);
+        cfg.dial = DialStyle::Roman;
+        let text = cfg.to_toml();
+        assert!(text.contains("[colors]"), "{text}");
+        assert!(text.contains("accent = \"#FF2A6D\""), "{text}");
+        let back = Config::from_toml(&text).unwrap();
+        assert_eq!(back, cfg);
+        assert_eq!(back.dial_for(0), DialStyle::Roman);
+        assert_eq!(back.dial_for(1), DialStyle::Stopwatch);
+        assert_eq!(back.colors.get(ColorField::NightFace), Some((1, 2, 3)));
+    }
+
+    #[test]
+    fn hex_colour_parsing() {
+        assert_eq!(parse_hex("#FF2A6D"), Some((255, 42, 109)));
+        assert_eq!(parse_hex("ff2a6d"), Some((255, 42, 109)));
+        assert_eq!(parse_hex(" #0f0 "), Some((0, 255, 0)));
+        assert_eq!(parse_hex("#12345"), None);
+        assert_eq!(parse_hex("#GG0000"), None);
+        assert_eq!(parse_hex("+1+2+3"), None);
+        assert_eq!(format_hex((5, 217, 232)), "#05D9E8");
+    }
+
+    #[test]
+    fn a_bad_colour_is_reported() {
+        let err = Config::from_toml("[colors]\naccent = \"pinkish\"\n").unwrap_err();
+        assert!(err.contains("accent") && err.contains("pinkish"), "{err}");
+    }
+
+    #[test]
+    fn every_dial_style_parses_by_name() {
+        for (name, style) in [
+            ("classic", DialStyle::Classic),
+            ("numbers", DialStyle::Numbers),
+            ("roman", DialStyle::Roman),
+            ("minimal", DialStyle::Minimal),
+            ("stopwatch", DialStyle::Stopwatch),
+            ("neon", DialStyle::Neon),
+        ] {
+            let cfg = Config::from_toml(&format!("dial = \"{name}\"")).unwrap();
+            assert_eq!(cfg.dial, style);
+        }
+    }
+
+    #[test]
+    fn older_settings_files_still_load() {
+        // Written by version 1.0, before themes, dials and colours were added.
+        let v1 = "master = 2\ntheme = \"light\"\n[[clock]]\nzone = \"local\"\n[[clock]]\nlabel = \"Paris\"\nzone = \"Europe/Paris\"\n";
+        let cfg = Config::from_toml(v1).unwrap();
+        assert_eq!(cfg.theme, Theme::Light);
+        assert_eq!(cfg.dial, DialStyle::default());
+        assert!(cfg.colors.is_empty());
+        assert_eq!(cfg.master, 2);
+    }
+
+    #[test]
     fn missing_fields_fall_back_to_defaults() {
         let cfg = Config::from_toml("[[clock]]\nzone = \"Asia/Tokyo\"\n").unwrap();
         assert_eq!(cfg.clocks.len(), 1);
@@ -252,12 +545,13 @@ mod tests {
     #[test]
     fn empty_clock_list_gets_a_local_clock() {
         let cfg = Config::from_toml("clock = []").unwrap();
-        assert_eq!(cfg.clocks, vec![ClockConfig { label: None, zone: "local".into() }]);
+        assert_eq!(cfg.clocks, vec![ClockConfig::local()]);
     }
 
     #[test]
     fn bad_toml_is_an_error() {
         assert!(Config::from_toml("size = \"enormous\"").is_err());
+        assert!(Config::from_toml("dial = \"sundial\"").is_err());
         assert!(Config::from_toml("this is not toml").is_err());
     }
 
