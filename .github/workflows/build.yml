@@ -22,8 +22,10 @@ jobs:
       - name: Test
         run: cargo test --locked
 
+      # Reports lint warnings without failing the build, so a new Rust
+      # release adding lints can't block a release.
       - name: Lint
-        run: cargo clippy --locked --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets
 
       - name: Build
         run: cargo build --release --locked

@@ -101,6 +101,15 @@ fn message_box(hwnd: HWND, text: &str, flags: MESSAGEBOX_STYLE) {
     unsafe { MessageBoxW(hwnd, text.as_ptr(), title.as_ptr(), flags) };
 }
 
+/// tiny-skia is premultiplied RGBA; Windows bitmaps want premultiplied BGRA.
+fn rgba_to_bgra(dst: &mut [u8], src: &[u8]) {
+    let (dst, _) = dst.as_chunks_mut::<4>();
+    let (src, _) = src.as_chunks::<4>();
+    for (d, s) in dst.iter_mut().zip(src) {
+        *d = [s[2], s[1], s[0], s[3]];
+    }
+}
+
 /// Off-screen bitmap the widget is drawn into before being handed to Windows.
 struct Surface {
     dc: HDC,
@@ -219,14 +228,8 @@ impl App {
         }
         let Some(surface) = &self.surface else { return };
 
-        // tiny-skia is premultiplied RGBA; layered windows want premultiplied BGRA.
         let dst = std::slice::from_raw_parts_mut(surface.bits, (w * h * 4) as usize);
-        for (d, s) in dst.chunks_exact_mut(4).zip(pixmap.data().chunks_exact(4)) {
-            d[0] = s[2];
-            d[1] = s[1];
-            d[2] = s[0];
-            d[3] = s[3];
-        }
+        rgba_to_bgra(dst, pixmap.data());
 
         let mut rect: RECT = std::mem::zeroed();
         GetWindowRect(self.hwnd, &mut rect);
@@ -880,12 +883,7 @@ unsafe fn make_icon() -> HICON {
     let pixmap = render::render_icon(size);
     let Some(surface) = Surface::new(size as i32, size as i32) else { return null_mut() };
     let dst = std::slice::from_raw_parts_mut(surface.bits, (size * size * 4) as usize);
-    for (d, s) in dst.chunks_exact_mut(4).zip(pixmap.data().chunks_exact(4)) {
-        d[0] = s[2];
-        d[1] = s[1];
-        d[2] = s[0];
-        d[3] = s[3];
-    }
+    rgba_to_bgra(dst, pixmap.data());
     let mask = CreateBitmap(size as i32, size as i32, 1, 1, null());
     let info = ICONINFO { fIcon: TRUE, xHotspot: 0, yHotspot: 0, hbmMask: mask, hbmColor: surface.bitmap };
     // The color bitmap can't be selected into a DC while the icon is created.
