@@ -18,7 +18,8 @@ Usage:
       [--at TIME]                  e.g. 2026-10-28T01:47:30Z (default: now)
       [--local ZONE]               time zone to use for \"local\" clocks
       [--scale N]                  1.0 = 100% display scaling
-      [--theme NAME] [--dial NAME] override the theme or clock face design
+      [--theme NAME] [--dial NAME] [--display analog|digital] [--digital NAME]
+                                   override the theme, face, clock type or digital layout
       [--fonts REGULAR BOLD]       font files to draw with
 ";
 
@@ -58,7 +59,7 @@ fn preview(args: &[String]) -> Result<(), String> {
 
     // Settings overrides, e.g. --theme light --dial roman, using the same
     // names as the settings file.
-    for key in ["theme", "dial"] {
+    for key in ["theme", "dial", "display", "digital"] {
         if let Some(v) = value(args, &format!("--{key}")) {
             let mut text = cfg.to_toml();
             text = text.lines().filter(|l| !l.starts_with(&format!("{key} ="))).collect::<Vec<_>>().join("\n");

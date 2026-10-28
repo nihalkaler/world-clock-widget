@@ -141,6 +141,43 @@ impl DialStyle {
     }
 }
 
+/// Whether the clocks have hands or show numbers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Display {
+    #[default]
+    Analog,
+    Digital,
+}
+
+/// How a digital clock shows the time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum DigitalStyle {
+    /// Split-flap cards that flip down when the number changes.
+    #[default]
+    Flip,
+    /// Seven-segment LED digits, like a bedside alarm clock.
+    Segment,
+    /// Big digits inside a ring that fills up with the seconds.
+    Ring,
+    /// Each digit as lit dots in binary, with the normal time underneath.
+    Binary,
+}
+
+impl DigitalStyle {
+    pub const ALL: [DigitalStyle; 4] = [DigitalStyle::Flip, DigitalStyle::Segment, DigitalStyle::Ring, DigitalStyle::Binary];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            DigitalStyle::Flip => "Flip clock",
+            DigitalStyle::Segment => "LED segments",
+            DigitalStyle::Ring => "Ring",
+            DigitalStyle::Binary => "Binary",
+        }
+    }
+}
+
 /// Where the widget sits relative to other windows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -328,6 +365,10 @@ pub struct Config {
     pub theme: Theme,
     /// Face design used by every clock that doesn't pick its own.
     pub dial: DialStyle,
+    /// Analog clocks with hands, or digital ones.
+    pub display: Display,
+    /// Layout used when `display` is digital.
+    pub digital: DigitalStyle,
     pub layer: Layer,
     /// When locked, the widget can't be dragged by accident.
     pub locked: bool,
@@ -352,6 +393,8 @@ impl Default for Config {
             size: Size::NORMAL,
             theme: Theme::Dark,
             dial: DialStyle::Classic,
+            display: Display::Analog,
+            digital: DigitalStyle::Flip,
             layer: Layer::Desktop,
             locked: false,
             opacity: 0.85,
@@ -374,11 +417,13 @@ const HEADER: &str = "\
 #
 #   master       which clock (1 = leftmost) time differences are measured from
 #   use_24_hour  true for 14:30, false for 2:30 PM
-#   second_hand  show the second hand
+#   second_hand  show seconds (the second hand, or seconds on a digital clock)
 #   size         1 to 100: 50 is normal, 100 is twice as big, 1 is a quarter
 #   theme        \"dark\", \"light\" or \"cyberpunk\"
-#   dial         clock face design: \"classic\", \"numbers\", \"roman\", \"minimal\",
+#   display      \"analog\" or \"digital\"
+#   dial         analog face design: \"classic\", \"numbers\", \"roman\", \"minimal\",
 #                \"stopwatch\" or \"neon\"
+#   digital      digital layout: \"flip\", \"segment\", \"ring\" or \"binary\"
 #   layer        \"desktop\" (behind other windows), \"normal\" or \"top\" (always on top)
 #   locked       true stops the widget being dragged
 #   opacity      background opacity from 0.3 to 1.0
@@ -606,6 +651,23 @@ mod tests {
         assert!((Size::new(63).factor() - 1.25).abs() < 0.02);
         let err = Config::from_toml("size = \"huge\"").unwrap_err();
         assert!(err.contains("1 to 100"), "{err}");
+    }
+
+    #[test]
+    fn analog_is_the_default_and_digital_styles_parse() {
+        let cfg = Config::default();
+        assert_eq!((cfg.display, cfg.digital), (Display::Analog, DigitalStyle::Flip));
+        for (name, style) in [
+            ("flip", DigitalStyle::Flip),
+            ("segment", DigitalStyle::Segment),
+            ("ring", DigitalStyle::Ring),
+            ("binary", DigitalStyle::Binary),
+        ] {
+            let cfg = Config::from_toml(&format!("display = \"digital\"\ndigital = \"{name}\"")).unwrap();
+            assert_eq!((cfg.display, cfg.digital), (Display::Digital, style));
+            assert_eq!(Config::from_toml(&cfg.to_toml()).unwrap(), cfg);
+        }
+        assert!(Config::from_toml("display = \"holographic\"").is_err());
     }
 
     #[test]

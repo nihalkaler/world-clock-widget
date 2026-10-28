@@ -2,7 +2,8 @@
 //! same code renders the Windows widget and the PNG previews.
 
 use crate::clock::{self, Reading};
-use crate::config::{ColorField, Colors, Config, DialStyle, Theme};
+use crate::config::{ColorField, Colors, Config, DialStyle, Display, Theme};
+use crate::digital::{self, Flip};
 use crate::text::{self, ellipsize, text_width, Align, Fonts, TextStyle};
 use std::f32::consts::PI;
 use tiny_skia::{
@@ -19,6 +20,8 @@ const LABEL_PX: f32 = 13.0;
 const LABEL_BASE: f32 = 13.0;
 const DIAL_TOP: f32 = 24.0;
 const DIAL_D: f32 = 100.0;
+/// Height of a digital clock's display (its width is the column less margins).
+const DIGITAL_H: f32 = 72.0;
 const TIME_PX: f32 = 22.0;
 const TIME_GAP: f32 = 31.0;
 const AMPM_PX: f32 = 12.0;
@@ -30,7 +33,7 @@ const BOTTOM: f32 = 5.0;
 /// Stopwatch case radius as a share of the dial radius (the crown sits above).
 const STOPWATCH: f32 = 0.84;
 
-fn rgba(r: u8, g: u8, b: u8, a: f32) -> Color {
+pub(crate) fn rgba(r: u8, g: u8, b: u8, a: f32) -> Color {
     Color::from_rgba8(r, g, b, (a.clamp(0.0, 1.0) * 255.0).round() as u8)
 }
 
@@ -43,7 +46,7 @@ fn to_rgb(c: Color) -> (u8, u8, u8) {
     (u.red(), u.green(), u.blue())
 }
 
-fn with_alpha(c: Color, a: f32) -> Color {
+pub(crate) fn with_alpha(c: Color, a: f32) -> Color {
     let mut c = c;
     c.set_alpha((c.alpha() * a).clamp(0.0, 1.0));
     c
@@ -53,32 +56,32 @@ fn with_alpha(c: Color, a: f32) -> Color {
 /// then overridden by any custom colours.
 #[derive(Debug, Clone)]
 pub struct Palette {
-    panel: Color,
+    pub(crate) panel: Color,
     /// Bottom colour of a vertical background gradient.
-    panel2: Option<Color>,
-    border: Color,
+    pub(crate) panel2: Option<Color>,
+    pub(crate) border: Color,
     /// Right-hand colour of a horizontal border gradient.
-    border2: Option<Color>,
-    separator: Color,
-    label: Color,
-    time: Color,
-    muted: Color,
-    diff: Color,
-    accent: Color,
-    master: Color,
-    master_bg: Color,
-    error: Color,
-    ring: Color,
-    day_face: Color,
-    day_ink: Color,
-    night_face: Color,
-    night_ink: Color,
-    metal_hi: Color,
-    metal_lo: Color,
+    pub(crate) border2: Option<Color>,
+    pub(crate) separator: Color,
+    pub(crate) label: Color,
+    pub(crate) time: Color,
+    pub(crate) muted: Color,
+    pub(crate) diff: Color,
+    pub(crate) accent: Color,
+    pub(crate) master: Color,
+    pub(crate) master_bg: Color,
+    pub(crate) error: Color,
+    pub(crate) ring: Color,
+    pub(crate) day_face: Color,
+    pub(crate) day_ink: Color,
+    pub(crate) night_face: Color,
+    pub(crate) night_ink: Color,
+    pub(crate) metal_hi: Color,
+    pub(crate) metal_lo: Color,
     /// Neon halo around lines and text.
-    glow: bool,
+    pub(crate) glow: bool,
     /// Cut-corner panel, scanlines and capitalised, spaced-out labels.
-    hud: bool,
+    pub(crate) hud: bool,
 }
 
 impl Palette {
@@ -217,11 +220,38 @@ impl Palette {
     }
 }
 
+/// How tall each part of a column is, which depends on analog or digital.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Layout {
+    /// Height of the dial or digital display.
+    pub display_h: f32,
+    /// Whether the time is also written out under the display.
+    pub time_line: bool,
+}
+
+impl Layout {
+    pub fn for_config(cfg: &Config) -> Layout {
+        match cfg.display {
+            Display::Analog => Layout { display_h: DIAL_D, time_line: true },
+            Display::Digital => Layout { display_h: DIGITAL_H, time_line: digital::shows_time_line(cfg.digital) },
+        }
+    }
+
+    /// Baseline of the date line, measured from the top of the display.
+    fn date_offset(&self) -> f32 {
+        if self.time_line {
+            self.display_h + TIME_GAP + DATE_GAP
+        } else {
+            self.display_h + DATE_GAP + 4.0
+        }
+    }
+}
+
 /// Pixel size of the widget for this many clocks.
-pub fn panel_size(clocks: usize, scale: f32) -> (u32, u32) {
+pub fn panel_size(clocks: usize, scale: f32, layout: &Layout) -> (u32, u32) {
     let n = clocks.max(1) as f32;
     let w = (PAD_X * 2.0 + COL_W * n) * scale;
-    let h = (PAD_Y + DIAL_TOP + DIAL_D + TIME_GAP + DATE_GAP + DIFF_GAP + BOTTOM + PAD_Y) * scale;
+    let h = (PAD_Y + DIAL_TOP + layout.date_offset() + DIFF_GAP + BOTTOM + PAD_Y) * scale;
     (w.ceil() as u32, h.ceil() as u32)
 }
 
@@ -237,14 +267,14 @@ pub fn column_at(x: f32, clocks: usize, scale: f32) -> Option<usize> {
 
 // ------------------------------------------------------------- primitives
 
-fn paint(color: Color) -> Paint<'static> {
+pub(crate) fn paint(color: Color) -> Paint<'static> {
     let mut p = Paint::default();
     p.set_color(color);
     p.anti_alias = true;
     p
 }
 
-fn rounded_rect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<Path> {
+pub(crate) fn rounded_rect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<Path> {
     let r = r.min(w / 2.0).min(h / 2.0);
     let k = 0.552_284_8 * r;
     let mut pb = PathBuilder::new();
@@ -276,12 +306,12 @@ fn chamfered_rect(x: f32, y: f32, w: f32, h: f32, big: f32, small: f32) -> Optio
     pb.finish()
 }
 
-fn fill(pix: &mut Pixmap, path: &Path, color: Color) {
+pub(crate) fn fill(pix: &mut Pixmap, path: &Path, color: Color) {
     pix.fill_path(path, &paint(color), FillRule::Winding, Transform::identity(), None);
 }
 
 /// Strokes a path, with a soft neon halo underneath when `glow` is on.
-fn stroke(pix: &mut Pixmap, path: &Path, width: f32, color: Color, glow: bool) {
+pub(crate) fn stroke(pix: &mut Pixmap, path: &Path, width: f32, color: Color, glow: bool) {
     if glow {
         for (spread, alpha) in [(4.2, 0.06), (2.8, 0.11), (1.8, 0.2)] {
             let s = Stroke { width: width * spread, line_cap: LineCap::Round, ..Stroke::default() };
@@ -292,13 +322,13 @@ fn stroke(pix: &mut Pixmap, path: &Path, width: f32, color: Color, glow: bool) {
     pix.stroke_path(path, &paint(color), &s, Transform::identity(), None);
 }
 
-fn fill_circle(pix: &mut Pixmap, cx: f32, cy: f32, r: f32, color: Color) {
+pub(crate) fn fill_circle(pix: &mut Pixmap, cx: f32, cy: f32, r: f32, color: Color) {
     if let Some(path) = PathBuilder::from_circle(cx, cy, r) {
         fill(pix, &path, color);
     }
 }
 
-fn circle(pix: &mut Pixmap, cx: f32, cy: f32, r: f32, width: f32, color: Color, glow: bool) {
+pub(crate) fn circle(pix: &mut Pixmap, cx: f32, cy: f32, r: f32, width: f32, color: Color, glow: bool) {
     if let Some(path) = PathBuilder::from_circle(cx, cy, r) {
         stroke(pix, &path, width, color, glow);
     }
@@ -325,7 +355,7 @@ fn radial(pix: &mut Pixmap, cx: f32, cy: f32, deg: f32, r0: f32, r1: f32, width:
 
 /// An arc clockwise from 12 o'clock to `deg`.
 #[allow(clippy::too_many_arguments)]
-fn arc(pix: &mut Pixmap, cx: f32, cy: f32, radius: f32, deg: f32, width: f32, color: Color, glow: bool) {
+pub(crate) fn arc(pix: &mut Pixmap, cx: f32, cy: f32, radius: f32, deg: f32, width: f32, color: Color, glow: bool) {
     if deg <= 0.0 {
         return;
     }
@@ -688,7 +718,7 @@ fn draw_dial_hands(
 /// Renders the widget. `scale` combines display DPI and the chosen size.
 pub fn render(readings: &[Reading], cfg: &Config, scale: f32, fonts: &Fonts) -> Pixmap {
     let mut pix = render_base(readings, cfg, scale, fonts);
-    draw_hands(&mut pix, readings, cfg, scale);
+    draw_hands(&mut pix, readings, cfg, scale, fonts, &[]);
     pix
 }
 
@@ -700,9 +730,22 @@ fn dial_centres(n: usize, s: f32) -> impl Iterator<Item = (f32, f32, f32)> {
     (0..n).map(move |i| (PAD_X * s + col_w * (i as f32 + 0.5), cy, r))
 }
 
-/// Draws the clock hands onto a frame made by [`render_base`].
-pub fn draw_hands(pix: &mut Pixmap, readings: &[Reading], cfg: &Config, scale: f32) {
+/// Draws the parts that move every second onto a frame made by
+/// [`render_base`]: the hands, or a digital clock's display. `flips` holds
+/// any flip-card animation in progress, one entry per clock.
+pub fn draw_hands(pix: &mut Pixmap, readings: &[Reading], cfg: &Config, scale: f32, fonts: &Fonts, flips: &[Flip]) {
     let pal = Palette::for_config(cfg);
+    if cfg.display == Display::Digital {
+        let s = scale;
+        let (area_w, area_h) = ((COL_W - 20.0) * s, DIGITAL_H * s);
+        for (i, reading) in readings.iter().enumerate() {
+            let x = PAD_X * s + COL_W * s * i as f32 + 10.0 * s;
+            let y = (PAD_Y + DIAL_TOP) * s;
+            let area = digital::Area { x, y, w: area_w, h: area_h };
+            digital::draw(pix, fonts, &area, reading, cfg, &pal, s, flips.get(i));
+        }
+        return;
+    }
     for (i, (reading, (cx, cy, r))) in readings.iter().zip(dial_centres(readings.len(), scale)).enumerate() {
         draw_dial_hands(pix, cx, cy, r, reading, cfg.dial_for(i), cfg.second_hand, &pal, scale);
     }
@@ -797,7 +840,8 @@ fn draw_panel(pix: &mut Pixmap, pal: &Palette, w: f32, h: f32, s: f32) {
 pub fn render_base(readings: &[Reading], cfg: &Config, scale: f32, fonts: &Fonts) -> Pixmap {
     let s = scale;
     let n = readings.len().max(1);
-    let (w, h) = panel_size(n, s);
+    let layout = Layout::for_config(cfg);
+    let (w, h) = panel_size(n, s, &layout);
     let mut pix = Pixmap::new(w, h).expect("non-zero widget size");
     let pal = Palette::for_config(cfg);
     let (wf, hf) = (w as f32, h as f32);
@@ -839,17 +883,22 @@ pub fn render_base(readings: &[Reading], cfg: &Config, scale: f32, fonts: &Fonts
         };
         text::draw(&mut pix, &label_style, &label, cx, top + LABEL_BASE * s);
 
-        // Analog dial (face and marks; hands come later).
-        let r = DIAL_D * s / 2.0;
-        let cy = top + DIAL_TOP * s + r;
-        draw_face(&mut pix, fonts, cx, cy, r, reading, cfg.dial_for(i), &pal, s);
+        // Analog dial (face and marks; hands come later). A digital display
+        // is drawn with the moving parts instead.
+        if cfg.display == Display::Analog {
+            let r = DIAL_D * s / 2.0;
+            let cy = top + DIAL_TOP * s + r;
+            draw_face(&mut pix, fonts, cx, cy, r, reading, cfg.dial_for(i), &pal, s);
+        }
 
-        // Digital time, with a smaller AM/PM.
-        let time_base = top + (DIAL_TOP + DIAL_D + TIME_GAP) * s;
+        // The time written out, with a smaller AM/PM.
+        let time_base = top + (DIAL_TOP + layout.display_h + TIME_GAP) * s;
         let time_font = if pal.hud { &fonts.display } else { &fonts.bold };
         let time_px = if pal.hud { TIME_PX * 1.06 } else { TIME_PX } * s;
         let (time, ampm) = clock::format_time(reading.hour, reading.minute, cfg.use_24_hour);
-        if reading.error.is_some() {
+        if !layout.time_line {
+            // Digital displays already show the time.
+        } else if reading.error.is_some() {
             text::draw_text(&mut pix, time_font, time_px, "--:--", cx, time_base, Align::Center, pal.muted);
         } else {
             let main = TextStyle { align: Align::Left, glow: glow_of(pal.label), ..TextStyle::new(time_font, time_px, pal.time) };
@@ -865,7 +914,7 @@ pub fn render_base(readings: &[Reading], cfg: &Config, scale: f32, fonts: &Fonts
         }
 
         // Day and date.
-        let date_base = time_base + DATE_GAP * s;
+        let date_base = top + (DIAL_TOP + layout.date_offset()) * s;
         let date = if reading.error.is_some() { "Check settings".to_string() } else { clock::format_date(reading) };
         let date = if pal.hud { date.to_uppercase() } else { date };
         let date_style = TextStyle { tracking: tracking * 0.6, ..TextStyle::new(&fonts.regular, DATE_PX * s, pal.muted) };
@@ -914,11 +963,12 @@ mod tests {
 
     #[test]
     fn size_grows_with_clocks_and_scale() {
-        let (w1, h1) = panel_size(1, 1.0);
-        let (w5, h5) = panel_size(5, 1.0);
+        let analog = Layout::for_config(&Config::default());
+        let (w1, h1) = panel_size(1, 1.0, &analog);
+        let (w5, h5) = panel_size(5, 1.0, &analog);
         assert_eq!(h1, h5);
         assert!(w5 > w1 * 4);
-        let (w5_big, _) = panel_size(5, 1.5);
+        let (w5_big, _) = panel_size(5, 1.5, &analog);
         assert_eq!(w5_big, (w5 as f32 * 1.5).ceil() as u32);
     }
 
@@ -973,6 +1023,51 @@ mod tests {
     }
 
     #[test]
+    fn every_digital_layout_renders_in_every_theme() {
+        use crate::config::DigitalStyle;
+        for theme in Theme::ALL {
+            for digital in DigitalStyle::ALL {
+                let cfg = Config { theme, display: Display::Digital, digital, ..Config::default() };
+                let pix = render_with(&cfg);
+                let layout = Layout::for_config(&cfg);
+                assert_eq!((pix.width(), pix.height()), panel_size(4, 1.0, &layout));
+                // Inside the first flip card, the LED screen, the ring and the binary screen alike.
+                let (cx, cy) = ((PAD_X + 10.0 + 26.0) as u32, (PAD_Y + DIAL_TOP + DIGITAL_H / 2.0) as u32);
+                assert_eq!(pix.pixel(cx, cy).unwrap().alpha(), 255, "{theme:?} {digital:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn digital_clocks_are_shorter_except_binary() {
+        use crate::config::DigitalStyle;
+        let height = |cfg: &Config| panel_size(1, 1.0, &Layout::for_config(cfg)).1;
+        let analog = height(&Config::default());
+        let flip = height(&Config { display: Display::Digital, ..Config::default() });
+        let binary = height(&Config { display: Display::Digital, digital: DigitalStyle::Binary, ..Config::default() });
+        assert!(flip < analog && binary < analog && flip < binary, "{flip} {binary} {analog}");
+    }
+
+    #[test]
+    fn a_flip_in_progress_draws_differently_from_a_still_card() {
+        let cfg = Config { display: Display::Digital, ..Config::default() };
+        let fonts = Fonts::load_system().expect("a font for tests");
+        let clocks = crate::resolve_clocks(&cfg);
+        let now: jiff::Timestamp = "2026-10-28T01:47:30Z".parse().unwrap();
+        let readings = clock::read_all(now, &clocks, 0);
+        let frame = |flips: &[Flip]| {
+            let mut pix = render_base(&readings, &cfg, 1.0, &fonts);
+            draw_hands(&mut pix, &readings, &cfg, 1.0, &fonts, flips);
+            pix
+        };
+        let still = frame(&[]);
+        let mid = frame(&[Flip { from: [None, Some("46".into())], progress: [1.0, 0.3] }]);
+        let done = frame(&[Flip { from: [None, Some("46".into())], progress: [1.0, 1.0] }]);
+        assert_ne!(still.data(), mid.data());
+        assert_eq!(still.data(), done.data(), "a finished flip looks like a still card");
+    }
+
+    #[test]
     fn smallest_and_largest_sizes_render() {
         use crate::config::Size;
         let fonts = Fonts::load_system().expect("a font for tests");
@@ -982,8 +1077,9 @@ mod tests {
             let clocks = crate::resolve_clocks(&cfg);
             let tiny = crate::render_now(now, &cfg, &clocks, Size::new(1).factor(), &fonts);
             let huge = crate::render_now(now, &cfg, &clocks, Size::new(100).factor(), &fonts);
-            assert_eq!(panel_size(4, 0.25), (tiny.width(), tiny.height()));
-            assert_eq!(huge.width(), panel_size(4, 2.0).0);
+            let layout = Layout::for_config(&cfg);
+            assert_eq!(panel_size(4, 0.25, &layout), (tiny.width(), tiny.height()));
+            assert_eq!(huge.width(), panel_size(4, 2.0, &layout).0);
             assert!(huge.width() > tiny.width() * 7);
         }
     }
