@@ -17,11 +17,12 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Registry::*;
 use windows_sys::Win32::System::Threading::CreateMutexW;
 use windows_sys::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
+use windows_sys::Win32::UI::Controls::{InitCommonControlsEx, ICC_BAR_CLASSES, ICC_STANDARD_CLASSES, INITCOMMONCONTROLSEX};
 use windows_sys::Win32::UI::Controls::Dialogs::{ChooseColorW, CC_ANYCOLOR, CC_FULLOPEN, CC_RGBINIT, CHOOSECOLORW};
 use windows_sys::Win32::UI::HiDpi::{
     GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, ReleaseCapture};
 use windows_sys::Win32::UI::Shell::*;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
@@ -52,7 +53,8 @@ const ID_24H: u32 = 10;
 const ID_SECOND_HAND: u32 = 11;
 const ID_LOCK: u32 = 12;
 const ID_AUTOSTART: u32 = 13;
-const ID_SIZE_BASE: u32 = 20; // + 0..3
+const ID_SIZE_BASE: u32 = 20; // + preset index
+const ID_SIZE_CUSTOM: u32 = 24;
 const ID_THEME_BASE: u32 = 30; // + 0..3
 const ID_LAYER_BASE: u32 = 40; // + 0..3
 const ID_EDIT_SETTINGS: u32 = 50;
@@ -69,7 +71,6 @@ const ID_ADD_ZONE: u32 = 2000; // + city index
 const ID_ADD_LOCAL: u32 = 2900;
 const ID_ADD_UTC: u32 = 2901;
 
-const SIZES: [(Size, &str); 3] = [(Size::Small, "Small"), (Size::Medium, "Medium"), (Size::Large, "Large")];
 const LAYERS: [(Layer, &str); 3] = [
     (Layer::Desktop, "On the desktop (behind windows)"),
     (Layer::Normal, "Like a normal window"),
@@ -252,6 +253,9 @@ impl App {
                 if centre > (work.left + work.right) / 2 {
                     pos.x = rect.right - w;
                 }
+                // A bigger widget shouldn't spill off the screen.
+                pos.x = pos.x.min(work.right - w).max(work.left);
+                pos.y = pos.y.min(work.bottom - h).max(work.top);
             }
             if self.cfg.x != Some(pos.x) || self.cfg.y != Some(pos.y) {
                 self.cfg.x = Some(pos.x);
@@ -443,9 +447,10 @@ impl App {
                 return AfterMenu::OpenSettings(self.cfg_path.clone());
             }
             ID_EXIT => return AfterMenu::Exit,
-            id if (ID_SIZE_BASE..ID_SIZE_BASE + 3).contains(&id) => {
-                self.cfg.size = SIZES[(id - ID_SIZE_BASE) as usize].0;
+            id if (ID_SIZE_BASE..ID_SIZE_BASE + Size::PRESETS.len() as u32).contains(&id) => {
+                self.cfg.size = Size::new(Size::PRESETS[(id - ID_SIZE_BASE) as usize] as i64);
             }
+            ID_SIZE_CUSTOM => return AfterMenu::CustomSize,
             id if (ID_THEME_BASE..ID_THEME_BASE + Theme::ALL.len() as u32).contains(&id) => {
                 self.cfg.theme = Theme::ALL[(id - ID_THEME_BASE) as usize];
             }
@@ -539,6 +544,7 @@ enum AfterMenu {
     Exit,
     OpenSettings(PathBuf),
     PickColor(ColorField),
+    CustomSize,
 }
 
 fn class_name(hwnd: HWND) -> String {
@@ -735,10 +741,20 @@ unsafe fn build_menu(state: &MenuState) -> HMENU {
     append(menu, check(cfg.second_hand), ID_SECOND_HAND, "Second hand");
 
     let size = CreatePopupMenu();
-    for (i, (s, name)) in SIZES.iter().enumerate() {
-        append(size, check(cfg.size == *s), ID_SIZE_BASE + i as u32, name);
+    let current = cfg.size.value();
+    for (i, preset) in Size::PRESETS.iter().enumerate() {
+        let name = match preset {
+            50 => "50  (normal)".to_string(),
+            100 => "100  (largest)".to_string(),
+            n => n.to_string(),
+        };
+        append(size, check(current == *preset), ID_SIZE_BASE + i as u32, &name);
     }
-    append_submenu(menu, size, "Size", true);
+    separator(size);
+    let is_custom = !Size::PRESETS.contains(&current);
+    let custom = if is_custom { format!("Custom: {current}…") } else { "Custom (1–100)…".to_string() };
+    append(size, check(is_custom), ID_SIZE_CUSTOM, &custom);
+    append_submenu(menu, size, &format!("Size ({current})"), true);
 
     let dial = CreatePopupMenu();
     for (k, style) in DialStyle::ALL.iter().enumerate() {
@@ -811,6 +827,7 @@ fn show_menu(hwnd: HWND, click_x: Option<i32>) {
             ShellExecuteW(hwnd, verb.as_ptr(), exe.as_ptr(), args.as_ptr(), null(), SW_SHOWNORMAL);
         },
         Some(AfterMenu::PickColor(field)) => pick_color(hwnd, field),
+        Some(AfterMenu::CustomSize) => custom_size(hwnd),
         _ => {}
     }
 }
@@ -823,6 +840,261 @@ fn from_colorref(c: COLORREF) -> (u8, u8, u8) {
     ((c & 0xFF) as u8, ((c >> 8) & 0xFF) as u8, ((c >> 16) & 0xFF) as u8)
 }
 
+/// An invisible window in the middle of the widget to own a dialog, so the
+/// dialog opens on the widget's screen, in front of other windows, even when
+/// the widget itself is pinned behind them.
+unsafe fn dialog_owner(hwnd: HWND) -> HWND {
+    let mut rect: RECT = std::mem::zeroed();
+    GetWindowRect(hwnd, &mut rect);
+    let class = wide("STATIC");
+    CreateWindowExW(
+        WS_EX_TOOLWINDOW,
+        class.as_ptr(),
+        null(),
+        WS_POPUP,
+        (rect.left + rect.right) / 2,
+        (rect.top + rect.bottom) / 2,
+        0,
+        0,
+        null_mut(),
+        null_mut(),
+        GetModuleHandleW(null()),
+        null(),
+    )
+}
+
+// ---------------------------------------------------------------- custom size dialog
+
+// Win32 constants for the dialog, spelled out to keep the feature list short.
+mod dlg {
+    pub const DS_SETFONT: u32 = 0x40;
+    pub const DS_MODALFRAME: u32 = 0x80;
+    pub const DS_CENTER: u32 = 0x800;
+    pub const SS_LEFT: u32 = 0x0;
+    pub const ES_CENTER: u32 = 0x1;
+    pub const ES_NUMBER: u32 = 0x2000;
+    pub const BS_PUSHBUTTON: u32 = 0x0;
+    pub const BS_DEFPUSHBUTTON: u32 = 0x1;
+    pub const TBS_AUTOTICKS: u32 = 0x1;
+    pub const BUTTON: u16 = 0x0080;
+    pub const EDIT: u16 = 0x0081;
+    pub const STATIC: u16 = 0x0082;
+    pub const WM_USER: u32 = 0x0400;
+    pub const TBM_GETPOS: u32 = WM_USER;
+    pub const TBM_SETPOS: u32 = WM_USER + 5;
+    pub const TBM_SETRANGE: u32 = WM_USER + 6;
+    pub const TBM_SETTICFREQ: u32 = WM_USER + 20;
+    pub const TBM_SETPAGESIZE: u32 = WM_USER + 21;
+    pub const EM_LIMITTEXT: u32 = 0x00C5;
+    pub const EN_CHANGE: u32 = 0x0300;
+    pub const IDC_SLIDER: i32 = 101;
+    pub const IDC_NUMBER: i32 = 102;
+    pub const IDC_HINT: i32 = 103;
+}
+
+/// An in-memory dialog template (DLGTEMPLATE plus DLGITEMTEMPLATEs).
+struct DialogTemplate {
+    words: Vec<u16>,
+    count_at: usize,
+}
+
+enum Class<'a> {
+    Atom(u16),
+    Name(&'a str),
+}
+
+impl DialogTemplate {
+    fn new(title: &str, style: u32, cx: i16, cy: i16) -> Self {
+        let mut t = DialogTemplate { words: Vec::new(), count_at: 0 };
+        t.dword(style | dlg::DS_SETFONT);
+        t.dword(0);
+        t.count_at = t.words.len();
+        t.words.extend([0, 0, 0, cx as u16, cy as u16]); // items, x, y, cx, cy
+        t.words.extend([0, 0]); // no menu, default class
+        t.string(title);
+        t.words.push(9); // 9 pt Segoe UI, like Windows' own dialogs
+        t.string("Segoe UI");
+        t
+    }
+
+    fn dword(&mut self, v: u32) {
+        self.words.push(v as u16);
+        self.words.push((v >> 16) as u16);
+    }
+
+    fn string(&mut self, s: &str) {
+        self.words.extend(s.encode_utf16());
+        self.words.push(0);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn item(&mut self, class: Class, text: &str, id: i32, style: u32, x: i16, y: i16, cx: i16, cy: i16) {
+        if self.words.len() % 2 == 1 {
+            self.words.push(0); // each item starts on a DWORD boundary
+        }
+        self.dword(style | WS_CHILD | WS_VISIBLE);
+        self.dword(0);
+        self.words.extend([x as u16, y as u16, cx as u16, cy as u16, id as u16]);
+        match class {
+            Class::Atom(atom) => self.words.extend([0xFFFF, atom]),
+            Class::Name(name) => self.string(name),
+        }
+        self.string(text);
+        self.words.push(0); // no creation data
+        self.words[self.count_at] += 1;
+    }
+
+    /// The template as DWORD-aligned memory, as Windows requires.
+    fn into_dwords(self) -> Vec<u32> {
+        self.words
+            .chunks(2)
+            .map(|pair| pair[0] as u32 | (pair.get(1).copied().unwrap_or(0) as u32) << 16)
+            .collect()
+    }
+}
+
+// Size the dialog started with, and whether it is filling in its own boxes.
+thread_local! {
+    static SIZE_DIALOG: std::cell::Cell<(u8, bool)> = const { std::cell::Cell::new((50, false)) };
+}
+
+fn preview_size(value: u8) {
+    with_app(|app| {
+        if app.cfg.size.value() != value {
+            app.cfg.size = Size::new(value as i64);
+            app.apply(false);
+        }
+    });
+}
+
+unsafe fn set_number_box(dialog: HWND, value: u8) {
+    let (start, _) = SIZE_DIALOG.with(|c| c.get());
+    SIZE_DIALOG.with(|c| c.set((start, true)));
+    SetDlgItemInt(dialog, dlg::IDC_NUMBER, value as u32, 0);
+    SIZE_DIALOG.with(|c| c.set((start, false)));
+}
+
+unsafe extern "system" fn size_dialog_proc(dialog: HWND, msg: u32, wparam: WPARAM, _lparam: LPARAM) -> isize {
+    match msg {
+        WM_INITDIALOG => {
+            let (start, _) = SIZE_DIALOG.with(|c| c.get());
+            let slider = dlg::IDC_SLIDER;
+            let range = (Size::MIN as isize) | ((Size::MAX as isize) << 16);
+            SendDlgItemMessageW(dialog, slider, dlg::TBM_SETRANGE, 1, range);
+            SendDlgItemMessageW(dialog, slider, dlg::TBM_SETTICFREQ, 25, 0);
+            SendDlgItemMessageW(dialog, slider, dlg::TBM_SETPAGESIZE, 0, 5);
+            SendDlgItemMessageW(dialog, slider, dlg::TBM_SETPOS, 1, start as isize);
+            SendDlgItemMessageW(dialog, dlg::IDC_NUMBER, dlg::EM_LIMITTEXT, 3, 0);
+            set_number_box(dialog, start);
+            1
+        }
+        WM_HSCROLL => {
+            let value = SendDlgItemMessageW(dialog, dlg::IDC_SLIDER, dlg::TBM_GETPOS, 0, 0) as u8;
+            set_number_box(dialog, value);
+            EnableWindow(GetDlgItem(dialog, IDOK), 1);
+            SetDlgItemTextW(dialog, dlg::IDC_HINT, wide("1 is the smallest and 100 the largest.").as_ptr());
+            preview_size(value);
+            0
+        }
+        WM_COMMAND => {
+            let (id, code) = ((wparam & 0xFFFF) as i32, ((wparam >> 16) & 0xFFFF) as u32);
+            match id {
+                dlg::IDC_NUMBER if code == dlg::EN_CHANGE && !SIZE_DIALOG.with(|c| c.get().1) => {
+                    let mut ok = 0;
+                    let value = GetDlgItemInt(dialog, dlg::IDC_NUMBER, &mut ok, 0);
+                    let valid = ok != 0 && (Size::MIN as u32..=Size::MAX as u32).contains(&value);
+                    EnableWindow(GetDlgItem(dialog, IDOK), valid as i32);
+                    let hint = if valid {
+                        "1 is the smallest and 100 the largest."
+                    } else {
+                        "Type a whole number from 1 to 100."
+                    };
+                    SetDlgItemTextW(dialog, dlg::IDC_HINT, wide(hint).as_ptr());
+                    if valid {
+                        SendDlgItemMessageW(dialog, dlg::IDC_SLIDER, dlg::TBM_SETPOS, 1, value as isize);
+                        preview_size(value as u8);
+                    }
+                    0
+                }
+                IDOK => {
+                    EndDialog(dialog, 1);
+                    1
+                }
+                IDCANCEL => {
+                    EndDialog(dialog, 0);
+                    1
+                }
+                _ => 0,
+            }
+        }
+        _ => 0,
+    }
+}
+
+/// Lets the person pick any size from 1 to 100, resizing the widget live.
+fn custom_size(hwnd: HWND) {
+    let Some(start) = with_app(|app| app.cfg.size.value()) else { return };
+    SIZE_DIALOG.with(|c| c.set((start, false)));
+
+    let style = WS_POPUP | WS_CAPTION | WS_SYSMENU | dlg::DS_MODALFRAME | dlg::DS_CENTER;
+    let mut t = DialogTemplate::new("Custom size", style, 218, 92);
+    t.item(
+        Class::Atom(dlg::STATIC),
+        "Drag the slider or type a number. 50 is the normal size, 100 is twice as big.",
+        -1,
+        dlg::SS_LEFT,
+        10,
+        8,
+        198,
+        18,
+    );
+    t.item(
+        Class::Name("msctls_trackbar32"),
+        "",
+        dlg::IDC_SLIDER,
+        WS_TABSTOP | dlg::TBS_AUTOTICKS,
+        6,
+        30,
+        162,
+        20,
+    );
+    t.item(
+        Class::Atom(dlg::EDIT),
+        "",
+        dlg::IDC_NUMBER,
+        WS_TABSTOP | WS_BORDER | dlg::ES_NUMBER | dlg::ES_CENTER,
+        174,
+        32,
+        34,
+        14,
+    );
+    t.item(Class::Atom(dlg::STATIC), "1 is the smallest and 100 the largest.", dlg::IDC_HINT, dlg::SS_LEFT, 10, 54, 198, 10);
+    t.item(Class::Atom(dlg::BUTTON), "OK", IDOK, WS_TABSTOP | dlg::BS_DEFPUSHBUTTON, 104, 70, 50, 14);
+    t.item(Class::Atom(dlg::BUTTON), "Cancel", IDCANCEL, WS_TABSTOP | dlg::BS_PUSHBUTTON, 158, 70, 50, 14);
+    let template = t.into_dwords();
+
+    let accepted = unsafe {
+        let owner = dialog_owner(hwnd);
+        let result = DialogBoxIndirectParamW(
+            GetModuleHandleW(null()),
+            template.as_ptr() as *const DLGTEMPLATE,
+            owner,
+            Some(size_dialog_proc),
+            0,
+        );
+        if !owner.is_null() {
+            DestroyWindow(owner);
+        }
+        result == 1
+    };
+    with_app(|app| {
+        if !accepted {
+            app.cfg.size = Size::new(start as i64);
+        }
+        app.apply(accepted);
+    });
+}
+
 /// Opens the standard Windows colour palette for one of the widget's colours.
 fn pick_color(hwnd: HWND, field: ColorField) {
     let Some((initial, mut swatches)) = with_app(|app| {
@@ -832,26 +1104,7 @@ fn pick_color(hwnd: HWND, field: ColorField) {
         return;
     };
     unsafe {
-        // An invisible owner in the middle of the widget, so the dialog opens
-        // over the clocks, in front of other windows, even when the widget
-        // itself is pinned behind them.
-        let mut rect: RECT = std::mem::zeroed();
-        GetWindowRect(hwnd, &mut rect);
-        let class = wide("STATIC");
-        let owner = CreateWindowExW(
-            WS_EX_TOOLWINDOW,
-            class.as_ptr(),
-            null(),
-            WS_POPUP,
-            (rect.left + rect.right) / 2,
-            (rect.top + rect.bottom) / 2,
-            0,
-            0,
-            null_mut(),
-            null_mut(),
-            GetModuleHandleW(null()),
-            null(),
-        );
+        let owner = dialog_owner(hwnd);
         let mut cc: CHOOSECOLORW = std::mem::zeroed();
         cc.lStructSize = std::mem::size_of::<CHOOSECOLORW>() as u32;
         cc.hwndOwner = owner;
@@ -1018,6 +1271,12 @@ pub fn run() {
         }
 
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        // Registers the slider control used by the Custom size dialog.
+        let controls = INITCOMMONCONTROLSEX {
+            dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
+            dwICC: ICC_BAR_CLASSES | ICC_STANDARD_CLASSES,
+        };
+        InitCommonControlsEx(&controls);
 
         let fonts = match Fonts::load_system() {
             Ok(f) => f,

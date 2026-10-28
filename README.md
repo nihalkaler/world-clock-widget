@@ -11,7 +11,8 @@ A small Windows desktop widget that shows up to five analog clocks side by side.
 - **Runs all the time**: starts with Windows, sits in the tray, and has no taskbar button
 - **Small**: one exe under 2 MB, no installer and no runtime. It only redraws the clock hands each second; the faces and text are cached and redrawn once a minute
 - **Make it yours**: six clock-face designs, Dark, Light and Cyberpunk themes, and your own colours from the Windows colour picker
-- Three sizes, 12 or 24-hour time, and sharp on high-DPI screens
+- **Any size from 1 to 100**: presets at 25, 50 (normal), 75 and 100 (twice as big), or a custom size with a live-preview slider
+- 12 or 24-hour time, and sharp on high-DPI screens
 
 ![Light theme with 24-hour time](docs/screenshot-light.png)
 
@@ -61,7 +62,8 @@ On first launch it appears in the top-right corner with your own time zone plus 
 | Add or remove a clock | Right-click → **Add a clock** / **Remove this clock** |
 | Keep it behind windows, normal, or on top | Right-click → **Placement** |
 | Stop accidental dragging | Right-click → **Lock position** |
-| Change size, face, theme, colours, 24-hour time, second hand | Right-click → the matching item |
+| Change the size | Right-click → **Size** → 25, 50, 75 or 100, or **Custom** to drag a slider or type any number from 1 to 100. The widget resizes as you drag; **Cancel** puts it back |
+| Change face, theme, colours, 24-hour time, second hand | Right-click → the matching item |
 | Reach the menu when the widget is covered | Click the clock icon in the system tray |
 
 The **Change time zone** menu has about 100 cities grouped by region, plus "This PC's time zone", which follows your computer's time zone setting (handy when you travel).
@@ -76,7 +78,7 @@ Everything is saved to `%APPDATA%\WorldClockWidget\config.toml`. Right-click →
 master = 1            # clock the differences are measured from (1 = leftmost)
 use_24_hour = false
 second_hand = true
-size = "medium"       # small | medium | large
+size = 50             # 1 to 100: 50 is normal, 100 is twice as big, 1 is a quarter
 theme = "dark"        # dark | light | cyberpunk
 dial = "classic"      # classic | numbers | roman | minimal | stopwatch | neon
 layer = "desktop"     # desktop | normal | top
@@ -111,12 +113,13 @@ Written in Rust with no GUI framework:
 
 | File | What it does |
 | --- | --- |
-| `src/win.rs` | The Win32 side, through `windows-sys`: a per-pixel-alpha layered window, tray icon, menus, the Windows colour picker (`ChooseColor`), start-with-Windows (registry `Run` key), single-instance guard, per-monitor DPI, and z-order handling for desktop placement |
+| `src/win.rs` | The Win32 side, through `windows-sys`: a per-pixel-alpha layered window, tray icon, menus, the Windows colour picker (`ChooseColor`), the Custom size dialog (built from an in-memory dialog template, with a slider that resizes the widget live), start-with-Windows (registry `Run` key), single-instance guard, per-monitor DPI, and z-order handling for desktop placement |
 | `src/render.rs` | Draws the widget with [`tiny-skia`](https://github.com/RazrFalcon/tiny-skia) into a pixel buffer, which is handed to Windows with `UpdateLayeredWindow`. Themes are palettes, custom colours override them, and each face design draws its own marks and hands (glow is layered translucent strokes) |
 | `src/text.rs` | Turns glyph outlines into anti-aliased paths with [`ab_glyph`](https://github.com/alexheretic/ab-glyph), with letter spacing and glow, using fonts Windows already has (Segoe UI, Bahnschrift, Georgia) so none are bundled |
 | `src/clock.rs` | Time-zone maths with [`jiff`](https://github.com/BurntSushi/jiff), which bundles the IANA time-zone database on Windows so daylight-saving rules are correct |
 | `src/config.rs` | Settings: TOML load/save, defaults, and keeping values in range |
 | `src/cities.rs` | The city list behind the menus |
+| `build.rs`, `resources/` | Embeds the exe icon and an application manifest (modern-style controls, per-monitor DPI) |
 
 Because drawing is platform independent, the widget can also be rendered to a PNG on any OS. That's how the screenshots above were made:
 

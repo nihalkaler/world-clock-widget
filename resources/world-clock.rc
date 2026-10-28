@@ -1,0 +1,7 @@
+// Windows resources: the exe icon and the application manifest.
+// Numeric ids so this compiles with both rc.exe and windres without headers.
+
+1 ICON "world-clock.ico"
+
+// 24 = RT_MANIFEST, 1 = the manifest Windows reads when the exe starts.
+1 24 "world-clock.exe.manifest"
