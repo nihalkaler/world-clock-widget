@@ -86,14 +86,18 @@ pub enum Theme {
     Light,
     /// Neon magenta and cyan on near-black, with glow and a HUD-style panel.
     Cyberpunk,
+    /// Olive and sand field-kit colours with an amber accent, and
+    /// night-vision green after dark.
+    Tactical,
 }
 
 impl Theme {
-    pub const ALL: [Theme; 3] = [Theme::Dark, Theme::Light, Theme::Cyberpunk];
+    pub const ALL: [Theme; 4] = [Theme::Dark, Theme::Light, Theme::Cyberpunk, Theme::Tactical];
 
     pub fn name(self) -> &'static str {
         match self {
             Theme::Cyberpunk => "Cyberpunk",
+            Theme::Tactical => "Tactical",
             Theme::Dark => "Dark",
             Theme::Light => "Light",
         }
@@ -419,7 +423,7 @@ const HEADER: &str = "\
 #   use_24_hour  true for 14:30, false for 2:30 PM
 #   second_hand  show seconds (the second hand, or seconds on a digital clock)
 #   size         1 to 100: 50 is normal, 100 is twice as big, 1 is a quarter
-#   theme        \"dark\", \"light\" or \"cyberpunk\"
+#   theme        \"dark\", \"light\", \"cyberpunk\" or \"tactical\"
 #   display      \"analog\" or \"digital\"
 #   dial         analog face design: \"classic\", \"numbers\", \"roman\", \"minimal\",
 #                \"stopwatch\" or \"neon\"
@@ -556,6 +560,7 @@ mod tests {
             assert_eq!(cfg.opacity, 0.85);
         }
         assert_eq!(Config::from_toml("theme = \"cyberpunk\"").unwrap().theme, Theme::Cyberpunk);
+        assert_eq!(Config::from_toml("theme = \"tactical\"").unwrap().theme, Theme::Tactical);
     }
 
     #[test]
