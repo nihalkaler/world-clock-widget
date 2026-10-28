@@ -11,7 +11,7 @@ A small Windows desktop widget that shows up to five analog clocks side by side.
 - **Runs all the time**: starts with Windows, sits in the tray, and has no taskbar button
 - **Small**: one exe under 2 MB, no installer and no runtime. It only redraws the clock hands each second; the faces and text are cached and redrawn once a minute
 - **Analog or digital**: six analog face designs, or four digital layouts including a flip clock whose cards flip down when the minute changes
-- **Make it yours**: Dark, Light and Cyberpunk themes, and your own colours from the Windows colour picker
+- **Make it yours**: Dark, Light, Cyberpunk and Tactical themes, and your own colours from the Windows colour picker
 - **Any size from 1 to 100**: presets at 25, 50 (normal), 75 and 100 (twice as big), or a custom size with a live-preview slider
 - 12 or 24-hour time, and sharp on high-DPI screens
 
@@ -60,9 +60,13 @@ Digital clocks follow the same themes, colours, 24-hour and **Show seconds** set
 | Stopwatch | An old pocket stopwatch: crown, side pushers, a 5–60 scale and a small 24-hour dial that tells 9am from 9pm |
 | Neon | Glowing rings, with the seconds sweeping round the rim as an arc |
 
-**Themes.** Right-click → **Theme**: Dark (the default), Light, or **Cyberpunk**, which has neon magenta and cyan with a glow, a cut-corner HUD panel with scanlines, and Bahnschrift digits.
+**Themes.** Right-click → **Theme**: Dark (the default), Light, Cyberpunk or Tactical. **Cyberpunk** has neon magenta and cyan with a glow, a cut-corner HUD panel with scanlines, and Bahnschrift digits.
 
 ![Cyberpunk theme with the Numbers face](docs/screenshot-cyberpunk.png)
+
+**Tactical** is olive and sand like field kit, with an amber accent, sand-coloured faces by day and night-vision green after dark, on a cut-corner plate with hatching and corner brackets.
+
+![Tactical theme with the Numbers face](docs/screenshot-tactical.png)
 
 **Your own colours.** Right-click → **Colours** opens the Windows colour palette for each part of the widget: background, accent (second hand and master clock), text, day and night clock faces, and day and night hands. Your picks sit on top of whichever theme you choose, and a tick in the menu shows which ones you've changed. **Reset to the theme's colours** puts them back.
 
@@ -94,7 +98,7 @@ master = 1            # clock the differences are measured from (1 = leftmost)
 use_24_hour = false
 second_hand = true
 size = 50             # 1 to 100: 50 is normal, 100 is twice as big, 1 is a quarter
-theme = "dark"        # dark | light | cyberpunk
+theme = "dark"        # dark | light | cyberpunk | tactical
 display = "analog"    # analog | digital
 dial = "classic"      # analog face: classic | numbers | roman | minimal | stopwatch | neon
 digital = "flip"      # digital layout: flip | segment | ring | binary

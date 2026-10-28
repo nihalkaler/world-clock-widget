@@ -82,6 +82,9 @@ pub struct Palette {
     pub(crate) glow: bool,
     /// Cut-corner panel, scanlines and capitalised, spaced-out labels.
     pub(crate) hud: bool,
+    /// Field-kit details instead of neon ones: an evenly cut plate,
+    /// diagonal hatching and corner brackets.
+    pub(crate) tactical: bool,
 }
 
 impl Palette {
@@ -116,6 +119,32 @@ impl Palette {
                 metal_lo: rgba(106, 0, 255, 1.0),
                 glow: true,
                 hud: true,
+                tactical: false,
+            },
+            Theme::Tactical => Palette {
+                panel: rgba(28, 32, 21, opacity),
+                panel2: Some(rgba(17, 20, 13, opacity)),
+                border: rgba(181, 161, 107, 0.9),
+                border2: None,
+                separator: rgba(181, 161, 107, 0.16),
+                label: rgba(216, 198, 154, 1.0),
+                time: rgba(236, 226, 200, 1.0),
+                muted: rgba(160, 150, 118, 1.0),
+                diff: rgba(190, 172, 120, 1.0),
+                accent: rgba(242, 160, 61, 1.0),
+                master: rgba(242, 160, 61, 1.0),
+                master_bg: rgba(242, 160, 61, 0.08),
+                error: rgba(230, 90, 70, 1.0),
+                ring: rgba(181, 161, 107, 0.45),
+                day_face: rgba(205, 191, 147, 1.0),
+                day_ink: rgba(36, 40, 26, 1.0),
+                night_face: rgba(19, 23, 15, 1.0),
+                night_ink: rgba(155, 229, 100, 1.0),
+                metal_hi: rgba(196, 186, 152, 1.0),
+                metal_lo: rgba(84, 88, 64, 1.0),
+                glow: false,
+                hud: true,
+                tactical: true,
             },
             Theme::Dark => Palette {
                 panel: rgba(17, 19, 25, opacity),
@@ -140,6 +169,7 @@ impl Palette {
                 metal_lo: rgba(120, 124, 134, 1.0),
                 glow: false,
                 hud: false,
+                tactical: false,
             },
             Theme::Light => Palette {
                 panel: rgba(250, 250, 252, opacity),
@@ -164,6 +194,7 @@ impl Palette {
                 metal_lo: rgba(110, 114, 124, 1.0),
                 glow: false,
                 hud: false,
+                tactical: false,
             },
         }
     }
@@ -753,7 +784,9 @@ pub fn draw_hands(pix: &mut Pixmap, readings: &[Reading], cfg: &Config, scale: f
 
 fn draw_panel(pix: &mut Pixmap, pal: &Palette, w: f32, h: f32, s: f32) {
     let half = 0.5 * s;
-    let shape = if pal.hud {
+    let shape = if pal.tactical {
+        chamfered_rect(half, half, w - 2.0 * half, h - 2.0 * half, 10.0 * s, 10.0 * s)
+    } else if pal.hud {
         chamfered_rect(half, half, w - 2.0 * half, h - 2.0 * half, 16.0 * s, 5.0 * s)
     } else {
         rounded_rect(half, half, w - 2.0 * half, h - 2.0 * half, CORNER * s)
@@ -771,7 +804,24 @@ fn draw_panel(pix: &mut Pixmap, pal: &Palette, w: f32, h: f32, s: f32) {
     }
     pix.fill_path(&bg, &fill_paint, FillRule::Winding, Transform::identity(), None);
 
-    if pal.hud {
+    if pal.tactical {
+        // Faint diagonal hatching, clipped to the panel.
+        if let Some(mut mask) = Mask::new(pix.width(), pix.height()) {
+            mask.fill_path(&bg, FillRule::Winding, true, Transform::identity());
+            let mut pb = PathBuilder::new();
+            let step = 7.0 * s.max(0.6);
+            let mut x = -h;
+            while x < w {
+                pb.move_to(x, h);
+                pb.line_to(x + h, 0.0);
+                x += step;
+            }
+            if let Some(lines) = pb.finish() {
+                let thin = Stroke { width: 1.0 * s.max(0.6), ..Stroke::default() };
+                pix.stroke_path(&lines, &paint(rgba(216, 198, 154, 0.035)), &thin, Transform::identity(), Some(&mask));
+            }
+        }
+    } else if pal.hud {
         // Faint scanlines, clipped to the panel.
         if let Some(mut mask) = Mask::new(pix.width(), pix.height()) {
             mask.fill_path(&bg, FillRule::Winding, true, Transform::identity());
@@ -819,7 +869,25 @@ fn draw_panel(pix: &mut Pixmap, pal: &Palette, w: f32, h: f32, s: f32) {
     let border_w = if pal.hud { 1.4 * s } else { 1.0 * s };
     pix.stroke_path(&bg, &border_paint, &Stroke { width: border_w, ..Stroke::default() }, Transform::identity(), None);
 
-    if pal.hud {
+    if pal.tactical {
+        // Corner brackets, like the marks on a rangefinder.
+        let (inset, arm) = (6.0 * s, 11.0 * s);
+        for (cx, cy, dx, dy) in [
+            (inset, inset, 1.0, 1.0),
+            (w - inset, inset, -1.0, 1.0),
+            (inset, h - inset, 1.0, -1.0),
+            (w - inset, h - inset, -1.0, -1.0),
+        ] {
+            let mut pb = PathBuilder::new();
+            pb.move_to(cx, cy + arm * dy);
+            pb.line_to(cx, cy);
+            pb.line_to(cx + arm * dx, cy);
+            if let Some(bracket) = pb.finish() {
+                let firm = Stroke { width: 1.8 * s, ..Stroke::default() };
+                pix.stroke_path(&bracket, &paint(pal.accent), &firm, Transform::identity(), None);
+            }
+        }
+    } else if pal.hud {
         // Thick "tabs" along the top-left and bottom-right edges.
         for (x0, y, x1, color) in [
             (16.0 * s + 4.0 * s, 1.6 * s, 16.0 * s + 46.0 * s, pal.border),
