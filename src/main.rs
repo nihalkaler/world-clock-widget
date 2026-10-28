@@ -18,6 +18,7 @@ Usage:
       [--at TIME]                  e.g. 2026-10-28T01:47:30Z (default: now)
       [--local ZONE]               time zone to use for \"local\" clocks
       [--scale N]                  1.0 = 100% display scaling
+      [--theme NAME] [--dial NAME] override the theme or clock face design
       [--fonts REGULAR BOLD]       font files to draw with
 ";
 
@@ -55,6 +56,15 @@ fn preview(args: &[String]) -> Result<(), String> {
     let cfg_path = value(args, "--config").map(PathBuf::from).unwrap_or_else(config::default_path);
     let mut cfg = if cfg_path.exists() { Config::load(&cfg_path)? } else { Config::default() };
 
+    // Settings overrides, e.g. --theme light --dial roman, using the same
+    // names as the settings file.
+    for key in ["theme", "dial"] {
+        if let Some(v) = value(args, &format!("--{key}")) {
+            let mut text = cfg.to_toml();
+            text = text.lines().filter(|l| !l.starts_with(&format!("{key} ="))).collect::<Vec<_>>().join("\n");
+            cfg = Config::from_toml(&format!("{key} = \"{v}\"\n{text}"))?;
+        }
+    }
     if let Some(zone) = value(args, "--local") {
         for clock in &mut cfg.clocks {
             if clock.zone.eq_ignore_ascii_case(config::LOCAL_ZONE) {

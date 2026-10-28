@@ -273,10 +273,10 @@ mod tests {
 
     #[test]
     fn labels_and_bad_zones() {
-        let c = resolve(&ClockConfig { label: None, zone: "America/Argentina/Buenos_Aires".into() });
+        let c = resolve(&ClockConfig { label: None, zone: "America/Argentina/Buenos_Aires".into(), dial: None });
         assert_eq!(c.label, "Buenos Aires");
         assert!(c.error.is_none());
-        let bad = resolve(&ClockConfig { label: None, zone: "Mars/Olympus_Mons".into() });
+        let bad = resolve(&ClockConfig { label: None, zone: "Mars/Olympus_Mons".into(), dial: None });
         assert_eq!(bad.label, "Olympus Mons");
         assert!(bad.error.is_some());
     }

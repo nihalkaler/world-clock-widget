@@ -10,7 +10,8 @@ A small Windows desktop widget that shows up to five analog clocks side by side.
 - **Stays in a fixed spot**: drag it where you want, then lock it. It can sit on the desktop behind your windows, act like a normal window, or stay always on top
 - **Runs all the time**: starts with Windows, sits in the tray, and has no taskbar button
 - **Small**: one exe under 2 MB, no installer and no runtime. It only redraws the clock hands each second; the faces and text are cached and redrawn once a minute
-- Light and dark themes, three sizes, 12 or 24-hour time, and sharp on high-DPI screens
+- **Make it yours**: six clock-face designs, Dark, Light and Cyberpunk themes, and your own colours from the Windows colour picker
+- Three sizes, 12 or 24-hour time, and sharp on high-DPI screens
 
 ![Light theme with 24-hour time](docs/screenshot-light.png)
 
@@ -29,6 +30,27 @@ cargo build --release
 
 On first launch it appears in the top-right corner with your own time zone plus London, New York and Tokyo, and turns on **Start with Windows**.
 
+## Make it yours
+
+**Clock faces.** Right-click → **Clock face** changes every clock. Right-click one clock → **This clock's face** gives just that clock its own design.
+
+![The six clock faces in the Dark and Cyberpunk themes](docs/faces.png)
+
+| Face | Looks like |
+| --- | --- |
+| Classic | Tick marks for every minute and hour (the default) |
+| Numbers | The hours written 1 to 12 |
+| Roman | Roman numerals with a railway-track minute ring |
+| Minimal | Just dots and slim hands |
+| Stopwatch | An old pocket stopwatch: crown, side pushers, a 5–60 scale and a small 24-hour dial that tells 9am from 9pm |
+| Neon | Glowing rings, with the seconds sweeping round the rim as an arc |
+
+**Themes.** Right-click → **Theme**: Dark (the default), Light, or **Cyberpunk**, which has neon magenta and cyan with a glow, a cut-corner HUD panel with scanlines, and Bahnschrift digits.
+
+![Cyberpunk theme with the Numbers face](docs/screenshot-cyberpunk.png)
+
+**Your own colours.** Right-click → **Colours** opens the Windows colour palette for each part of the widget: background, accent (second hand and master clock), text, day and night clock faces, and day and night hands. Your picks sit on top of whichever theme you choose, and a tick in the menu shows which ones you've changed. **Reset to the theme's colours** puts them back.
+
 ## Using it
 
 | To do this | Do this |
@@ -39,7 +61,7 @@ On first launch it appears in the top-right corner with your own time zone plus 
 | Add or remove a clock | Right-click → **Add a clock** / **Remove this clock** |
 | Keep it behind windows, normal, or on top | Right-click → **Placement** |
 | Stop accidental dragging | Right-click → **Lock position** |
-| Change size, theme, 24-hour time, second hand | Right-click → the matching item |
+| Change size, face, theme, colours, 24-hour time, second hand | Right-click → the matching item |
 | Reach the menu when the widget is covered | Click the clock icon in the system tray |
 
 The **Change time zone** menu has about 100 cities grouped by region, plus "This PC's time zone", which follows your computer's time zone setting (handy when you travel).
@@ -55,10 +77,14 @@ master = 1            # clock the differences are measured from (1 = leftmost)
 use_24_hour = false
 second_hand = true
 size = "medium"       # small | medium | large
-theme = "dark"        # dark | light
+theme = "dark"        # dark | light | cyberpunk
+dial = "classic"      # classic | numbers | roman | minimal | stopwatch | neon
 layer = "desktop"     # desktop | normal | top
 locked = false
 opacity = 0.85        # background, 0.3 to 1.0
+
+[colors]              # optional; anything left out comes from the theme
+accent = "#2EC4B6"    # also: background, text, day_face, night_face, day_hands, night_hands
 
 [[clock]]
 zone = "local"        # this PC's time zone
@@ -66,6 +92,7 @@ zone = "local"        # this PC's time zone
 [[clock]]
 label = "Mum & Dad"
 zone = "Asia/Kolkata"
+dial = "stopwatch"    # optional: this clock's own face
 
 [[clock]]
 label = "Team (NYC)"
@@ -84,9 +111,9 @@ Written in Rust with no GUI framework:
 
 | File | What it does |
 | --- | --- |
-| `src/win.rs` | The Win32 side, through `windows-sys`: a per-pixel-alpha layered window, tray icon, menus, start-with-Windows (registry `Run` key), single-instance guard, per-monitor DPI, and z-order handling for desktop placement |
-| `src/render.rs` | Draws the widget with [`tiny-skia`](https://github.com/RazrFalcon/tiny-skia) into a pixel buffer, which is handed to Windows with `UpdateLayeredWindow` |
-| `src/text.rs` | Turns glyph outlines into anti-aliased paths with [`ab_glyph`](https://github.com/alexheretic/ab-glyph), using Windows' own Segoe UI so no font is bundled |
+| `src/win.rs` | The Win32 side, through `windows-sys`: a per-pixel-alpha layered window, tray icon, menus, the Windows colour picker (`ChooseColor`), start-with-Windows (registry `Run` key), single-instance guard, per-monitor DPI, and z-order handling for desktop placement |
+| `src/render.rs` | Draws the widget with [`tiny-skia`](https://github.com/RazrFalcon/tiny-skia) into a pixel buffer, which is handed to Windows with `UpdateLayeredWindow`. Themes are palettes, custom colours override them, and each face design draws its own marks and hands (glow is layered translucent strokes) |
+| `src/text.rs` | Turns glyph outlines into anti-aliased paths with [`ab_glyph`](https://github.com/alexheretic/ab-glyph), with letter spacing and glow, using fonts Windows already has (Segoe UI, Bahnschrift, Georgia) so none are bundled |
 | `src/clock.rs` | Time-zone maths with [`jiff`](https://github.com/BurntSushi/jiff), which bundles the IANA time-zone database on Windows so daylight-saving rules are correct |
 | `src/config.rs` | Settings: TOML load/save, defaults, and keeping values in range |
 | `src/cities.rs` | The city list behind the menus |
@@ -94,10 +121,10 @@ Written in Rust with no GUI framework:
 Because drawing is platform independent, the widget can also be rendered to a PNG on any OS. That's how the screenshots above were made:
 
 ```sh
-cargo run --release -- --preview out.png --at 2026-10-28T01:47:30Z --local Pacific/Auckland --scale 1.5
+cargo run --release -- --preview out.png --at 2026-10-28T01:47:30Z --local Pacific/Auckland --scale 1.5 --theme cyberpunk --dial numbers
 ```
 
-Run the tests with `cargo test`. They cover daylight-saving changes, half- and quarter-hour zones (India, Nepal, Chatham Islands), "yesterday/tomorrow" across the date line, settings parsing, and that every city in the menu is a real time zone.
+Run the tests with `cargo test`. They cover daylight-saving changes, half- and quarter-hour zones (India, Nepal, Chatham Islands), "yesterday/tomorrow" across the date line, settings parsing (including files from older versions), custom colours, that every theme and face design renders, and that every city in the menu is a real time zone.
 
 ## Licence
 

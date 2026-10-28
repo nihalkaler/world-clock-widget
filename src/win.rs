@@ -17,6 +17,7 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Registry::*;
 use windows_sys::Win32::System::Threading::CreateMutexW;
 use windows_sys::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
+use windows_sys::Win32::UI::Controls::Dialogs::{ChooseColorW, CC_ANYCOLOR, CC_FULLOPEN, CC_RGBINIT, CHOOSECOLORW};
 use windows_sys::Win32::UI::HiDpi::{
     GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
@@ -26,8 +27,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use world_clock_widget::cities::{self, CITIES, REGIONS};
 use world_clock_widget::clock::{self, ResolvedClock};
-use world_clock_widget::config::{self, ClockConfig, Config, Layer, Size, Theme, LOCAL_ZONE, MAX_CLOCKS};
-use world_clock_widget::render;
+use world_clock_widget::config::{
+    self, ClockConfig, ColorField, Config, DialStyle, Layer, Size, Theme, LOCAL_ZONE, MAX_CLOCKS,
+};
+use world_clock_widget::render::{self, Palette};
 use world_clock_widget::text::Fonts;
 
 const APP_NAME: &str = "World Clock Widget";
@@ -50,10 +53,15 @@ const ID_SECOND_HAND: u32 = 11;
 const ID_LOCK: u32 = 12;
 const ID_AUTOSTART: u32 = 13;
 const ID_SIZE_BASE: u32 = 20; // + 0..3
-const ID_THEME_BASE: u32 = 30; // + 0..2
+const ID_THEME_BASE: u32 = 30; // + 0..3
 const ID_LAYER_BASE: u32 = 40; // + 0..3
 const ID_EDIT_SETTINGS: u32 = 50;
+const ID_COLOR_BASE: u32 = 60; // + 0..7, opens the colour picker
+const ID_COLOR_RESET: u32 = 70;
+const ID_DIAL_BASE: u32 = 80; // + 0..6, every clock
 const ID_EXIT: u32 = 99;
+const ID_CLOCK_DIAL_SAME: u32 = 110; // the clicked clock follows the others
+const ID_CLOCK_DIAL_BASE: u32 = 111; // + 0..6, the clicked clock only
 const ID_SET_ZONE: u32 = 1000; // + city index
 const ID_SET_LOCAL: u32 = 1900;
 const ID_SET_UTC: u32 = 1901;
@@ -62,7 +70,6 @@ const ID_ADD_LOCAL: u32 = 2900;
 const ID_ADD_UTC: u32 = 2901;
 
 const SIZES: [(Size, &str); 3] = [(Size::Small, "Small"), (Size::Medium, "Medium"), (Size::Large, "Large")];
-const THEMES: [(Theme, &str); 2] = [(Theme::Dark, "Dark"), (Theme::Light, "Light")];
 const LAYERS: [(Layer, &str); 3] = [
     (Layer::Desktop, "On the desktop (behind windows)"),
     (Layer::Normal, "Like a normal window"),
@@ -171,6 +178,8 @@ struct App {
     hook: HWINEVENTHOOK,
     ticks: u32,
     pending_error: Option<String>,
+    /// The colour picker's 16 "custom colours" boxes, seeded from the theme.
+    swatches: [COLORREF; 16],
 }
 
 impl App {
@@ -406,7 +415,11 @@ impl App {
     /// Runs a menu command. Returns what to do once the app is no longer borrowed.
     fn command(&mut self, id: u32, clicked: Option<usize>) -> AfterMenu {
         let city_clock = |city: &cities::City| ClockConfig::new(city.label, city.zone);
-        let local_clock = || ClockConfig { label: None, zone: LOCAL_ZONE.into() };
+        // Changing a clock's city keeps its own face design.
+        let rezone = |clock: &mut ClockConfig, new: ClockConfig| {
+            clock.label = new.label;
+            clock.zone = new.zone;
+        };
         match id {
             ID_MAKE_MASTER => {
                 if let Some(i) = clicked {
@@ -433,8 +446,21 @@ impl App {
             id if (ID_SIZE_BASE..ID_SIZE_BASE + 3).contains(&id) => {
                 self.cfg.size = SIZES[(id - ID_SIZE_BASE) as usize].0;
             }
-            id if (ID_THEME_BASE..ID_THEME_BASE + 2).contains(&id) => {
-                self.cfg.theme = THEMES[(id - ID_THEME_BASE) as usize].0;
+            id if (ID_THEME_BASE..ID_THEME_BASE + Theme::ALL.len() as u32).contains(&id) => {
+                self.cfg.theme = Theme::ALL[(id - ID_THEME_BASE) as usize];
+            }
+            id if (ID_COLOR_BASE..ID_COLOR_BASE + ColorField::ALL.len() as u32).contains(&id) => {
+                return AfterMenu::PickColor(ColorField::ALL[(id - ID_COLOR_BASE) as usize]);
+            }
+            ID_COLOR_RESET => self.cfg.colors = Default::default(),
+            id if (ID_DIAL_BASE..ID_DIAL_BASE + DialStyle::ALL.len() as u32).contains(&id) => {
+                self.cfg.dial = DialStyle::ALL[(id - ID_DIAL_BASE) as usize];
+            }
+            id if (ID_CLOCK_DIAL_SAME..=ID_CLOCK_DIAL_BASE + DialStyle::ALL.len() as u32).contains(&id) => {
+                if let Some(i) = clicked {
+                    self.cfg.clocks[i].dial =
+                        id.checked_sub(ID_CLOCK_DIAL_BASE).map(|k| DialStyle::ALL[k as usize]);
+                }
             }
             id if (ID_LAYER_BASE..ID_LAYER_BASE + 3).contains(&id) => {
                 self.cfg.layer = LAYERS[(id - ID_LAYER_BASE) as usize].0;
@@ -442,19 +468,19 @@ impl App {
             }
             ID_SET_LOCAL | ID_SET_UTC => {
                 if let Some(i) = clicked {
-                    self.cfg.clocks[i] =
-                        if id == ID_SET_LOCAL { local_clock() } else { city_clock(&cities::UTC) };
+                    let new = if id == ID_SET_LOCAL { ClockConfig::local() } else { city_clock(&cities::UTC) };
+                    rezone(&mut self.cfg.clocks[i], new);
                 }
             }
             ID_ADD_LOCAL => {
-                self.cfg.add_clock(local_clock());
+                self.cfg.add_clock(ClockConfig::local());
             }
             ID_ADD_UTC => {
                 self.cfg.add_clock(city_clock(&cities::UTC));
             }
             id if (ID_SET_ZONE..ID_SET_ZONE + CITIES.len() as u32).contains(&id) => {
                 if let Some(i) = clicked {
-                    self.cfg.clocks[i] = city_clock(&CITIES[(id - ID_SET_ZONE) as usize]);
+                    rezone(&mut self.cfg.clocks[i], city_clock(&CITIES[(id - ID_SET_ZONE) as usize]));
                 }
             }
             id if (ID_ADD_ZONE..ID_ADD_ZONE + CITIES.len() as u32).contains(&id) => {
@@ -512,6 +538,7 @@ enum AfterMenu {
     Nothing,
     Exit,
     OpenSettings(PathBuf),
+    PickColor(ColorField),
 }
 
 fn class_name(hwnd: HWND) -> String {
@@ -676,6 +703,14 @@ unsafe fn build_menu(state: &MenuState) -> HMENU {
             "Change time zone",
             true,
         );
+        let own = CreatePopupMenu();
+        let own_dial = cfg.clocks.get(i).and_then(|c| c.dial);
+        append(own, check(own_dial.is_none()), ID_CLOCK_DIAL_SAME, "Same as the other clocks");
+        separator(own);
+        for (k, style) in DialStyle::ALL.iter().enumerate() {
+            append(own, check(own_dial == Some(*style)), ID_CLOCK_DIAL_BASE + k as u32, style.name());
+        }
+        append_submenu(menu, own, "This clock's face", true);
         let master = i == state.master;
         append(
             menu,
@@ -705,11 +740,28 @@ unsafe fn build_menu(state: &MenuState) -> HMENU {
     }
     append_submenu(menu, size, "Size", true);
 
+    let dial = CreatePopupMenu();
+    for (k, style) in DialStyle::ALL.iter().enumerate() {
+        append(dial, check(cfg.dial == *style), ID_DIAL_BASE + k as u32, style.name());
+    }
+    append_submenu(menu, dial, "Clock face", true);
+
     let theme = CreatePopupMenu();
-    for (i, (t, name)) in THEMES.iter().enumerate() {
-        append(theme, check(cfg.theme == *t), ID_THEME_BASE + i as u32, name);
+    for (k, t) in Theme::ALL.iter().enumerate() {
+        append(theme, check(cfg.theme == *t), ID_THEME_BASE + k as u32, t.name());
     }
     append_submenu(menu, theme, "Theme", true);
+
+    // Each item opens the Windows colour palette; a tick means it's customised.
+    let colors = CreatePopupMenu();
+    for (k, field) in ColorField::ALL.iter().enumerate() {
+        let custom = cfg.colors.get(*field).is_some();
+        append(colors, check(custom), ID_COLOR_BASE + k as u32, &format!("{}…", field.name()));
+    }
+    separator(colors);
+    let any_custom = !cfg.colors.is_empty();
+    append(colors, if any_custom { MF_ENABLED } else { MF_GRAYED }, ID_COLOR_RESET, "Reset to the theme's colours");
+    append_submenu(menu, colors, "Colours", true);
 
     let layer = CreatePopupMenu();
     for (i, (l, name)) in LAYERS.iter().enumerate() {
@@ -758,7 +810,65 @@ fn show_menu(hwnd: HWND, click_x: Option<i32>) {
             let args = wide(&format!("\"{}\"", path.display()));
             ShellExecuteW(hwnd, verb.as_ptr(), exe.as_ptr(), args.as_ptr(), null(), SW_SHOWNORMAL);
         },
+        Some(AfterMenu::PickColor(field)) => pick_color(hwnd, field),
         _ => {}
+    }
+}
+
+fn colorref((r, g, b): (u8, u8, u8)) -> COLORREF {
+    r as u32 | (g as u32) << 8 | (b as u32) << 16
+}
+
+fn from_colorref(c: COLORREF) -> (u8, u8, u8) {
+    ((c & 0xFF) as u8, ((c >> 8) & 0xFF) as u8, ((c >> 16) & 0xFF) as u8)
+}
+
+/// Opens the standard Windows colour palette for one of the widget's colours.
+fn pick_color(hwnd: HWND, field: ColorField) {
+    let Some((initial, mut swatches)) = with_app(|app| {
+        let pal = Palette::for_config(&app.cfg);
+        (pal.color_of(field), app.swatches)
+    }) else {
+        return;
+    };
+    unsafe {
+        // An invisible owner in the middle of the widget, so the dialog opens
+        // over the clocks, in front of other windows, even when the widget
+        // itself is pinned behind them.
+        let mut rect: RECT = std::mem::zeroed();
+        GetWindowRect(hwnd, &mut rect);
+        let class = wide("STATIC");
+        let owner = CreateWindowExW(
+            WS_EX_TOOLWINDOW,
+            class.as_ptr(),
+            null(),
+            WS_POPUP,
+            (rect.left + rect.right) / 2,
+            (rect.top + rect.bottom) / 2,
+            0,
+            0,
+            null_mut(),
+            null_mut(),
+            GetModuleHandleW(null()),
+            null(),
+        );
+        let mut cc: CHOOSECOLORW = std::mem::zeroed();
+        cc.lStructSize = std::mem::size_of::<CHOOSECOLORW>() as u32;
+        cc.hwndOwner = owner;
+        cc.rgbResult = colorref(initial);
+        cc.lpCustColors = swatches.as_mut_ptr();
+        cc.Flags = CC_RGBINIT | CC_FULLOPEN | CC_ANYCOLOR;
+        let picked = ChooseColorW(&mut cc) != 0;
+        if !owner.is_null() {
+            DestroyWindow(owner);
+        }
+        with_app(|app| {
+            app.swatches = swatches;
+            if picked {
+                app.cfg.colors.set(field, from_colorref(cc.rgbResult));
+                app.apply(true);
+            }
+        });
     }
 }
 
@@ -1014,10 +1124,14 @@ pub fn run() {
             hook,
             ticks: 0,
             pending_error: startup_error,
+            swatches: [0x00FF_FFFF; 16],
         };
         APP.with(|cell| *cell.borrow_mut() = Some(app));
 
         with_app(|app| {
+            for (slot, rgb) in app.swatches.iter_mut().zip(Palette::for_config(&app.cfg).swatches()) {
+                *slot = colorref(rgb);
+            }
             let has_position = app.cfg.x.is_some() && app.cfg.y.is_some();
             app.resolve();
             app.redraw(true);
